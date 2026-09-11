@@ -294,13 +294,15 @@ function setTagTypeCoolDown(ms) {
 
 async function fetchTagType(tag, retryCount = 0) {
     if (algoTagsCache[tag]) return algoTagsCache[tag];
+    const site = typeof window.getCurrentSite === 'function' ? window.getCurrentSite() : null;
+    const isMoebooru = site && site.format === 'moebooru';
     const baseUrl = typeof window.buildTagLookupUrl === 'function' ? window.buildTagLookupUrl() : null;
     if (!baseUrl) {
         algoTagsCache[tag] = 'general';
         return 'general';
     }
     try {
-        const url = `${baseUrl}&name=${encodeURIComponent(tag)}`;
+        const url = `${baseUrl}${encodeURIComponent(tag)}`;
         
         // Direct fetch to bypass the slow global queue
         const res = await fetch(proxifyUrl(url));
@@ -316,29 +318,42 @@ async function fetchTagType(tag, retryCount = 0) {
             }
         }
         
-        const xmlText = await res.text();
-        
-        // Use DOMParser to parse the XML
-        const parser = new DOMParser();
-        const xml = parser.parseFromString(xmlText, "text/xml");
-        const tagNode = xml.querySelector('tag');
-        
-        if (tagNode) {
-            const typeInt = parseInt(tagNode.getAttribute('type'), 10);
-            let category = 'general';
-            if (typeInt === 1) category = 'artist';
-            else if (typeInt === 3) category = 'copyright';
-            else if (typeInt === 4) category = 'character';
-            else if (typeInt === 5) category = 'metadata';
-            
-            algoTagsCache[tag] = category;
-            return category;
+        let category = 'general';
+        if (isMoebooru) {
+            // yande.re / konachan return a JSON array: [{ "type": 1, "name": "..." }]
+            const arr = await res.json();
+            const node = Array.isArray(arr) ? arr[0] : (arr && arr.data ? arr.data[0] : null);
+            if (node && typeof node.type !== 'undefined') {
+                const typeInt = parseInt(node.type, 10);
+                if (typeInt === 1) category = 'artist';
+                else if (typeInt === 3) category = 'copyright';
+                else if (typeInt === 4) category = 'character';
+                else if (typeInt === 5) category = 'metadata';
+            }
         } else {
-            if (tagTypeWarnCount < TAG_TYPE_MAX_WARNS) {
-                tagTypeWarnCount++;
-                console.warn('No tag node found in XML for tag:', tag);
+            const xmlText = await res.text();
+            
+            // Use DOMParser to parse the XML
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(xmlText, "text/xml");
+            const tagNode = xml.querySelector('tag');
+            
+            if (tagNode) {
+                const typeInt = parseInt(tagNode.getAttribute('type'), 10);
+                if (typeInt === 1) category = 'artist';
+                else if (typeInt === 3) category = 'copyright';
+                else if (typeInt === 4) category = 'character';
+                else if (typeInt === 5) category = 'metadata';
+            } else {
+                if (tagTypeWarnCount < TAG_TYPE_MAX_WARNS) {
+                    tagTypeWarnCount++;
+                    console.warn('No tag node found in XML for tag:', tag);
+                }
             }
         }
+        
+        algoTagsCache[tag] = category;
+        return category;
     } catch (e) {
         // Rate-limited responses (429) arrive here from the browser as opaque
         // TypeErrors because the API omits the CORS header on error responses.

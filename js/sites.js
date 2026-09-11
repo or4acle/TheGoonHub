@@ -10,62 +10,12 @@
       id: 'rule34',
       name: 'Rule34',
       api: 'https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624',
+      tagApi: 'https://api.rule34.xxx/index.php?page=dapi&s=tag&q=index&api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624&name=',
       autocomplete: 'https://api.rule34.xxx/autocomplete.php?q={q}',
       tagsApi: true,
       format: 'gelbooru',
       perPage: 40,
       cors: true
-    },
-    {
-      id: 'gelbooru',
-      name: 'Gelbooru (SFW)',
-      api: 'https://gelbooru.com/index.php?page=dapi&s=post&q=index',
-      autocomplete: 'https://gelbooru.com/index.php?page=autocomplete2&term={q}',
-      tagsApi: true,
-      format: 'gelbooru',
-      perPage: 42,
-      cors: false
-    },
-    {
-      id: 'safebooru',
-      name: 'Safebooru (SFW)',
-      api: 'https://safebooru.org/index.php?page=dapi&s=post&q=index',
-      autocomplete: 'https://safebooru.org/index.php?page=autocomplete2&term={q}',
-      tagsApi: true,
-      format: 'gelbooru',
-      perPage: 42,
-      cors: false
-    },
-    {
-      id: 'xbooru',
-      name: 'XBooru',
-      api: 'https://xbooru.com/index.php?page=dapi&s=post&q=index',
-      autocomplete: 'https://xbooru.com/index.php?page=autocomplete2&term={q}',
-      tagsApi: true,
-      format: 'gelbooru',
-      perPage: 42,
-      cors: false
-    },
-    {
-      id: 'tbib',
-      name: 'TBIB',
-      api: 'https://tbib.org/index.php?page=dapi&s=post&q=index',
-      autocomplete: 'https://tbib.org/index.php?page=autocomplete2&term={q}',
-      tagsApi: true,
-      format: 'gelbooru',
-      perPage: 42,
-      cors: false
-    },
-    {
-      id: 'danbooru',
-      name: 'Danbooru',
-      api: 'https://danbooru.donmai.us/posts.json',
-      autocomplete: 'https://danbooru.donmai.us/autocomplete.json?search[query_matches]={q}&limit=8',
-      tagsApi: false,
-      format: 'danbooru',
-      perPage: 40,
-      experimental: true,
-      cors: false
     },
     {
       id: 'e621',
@@ -77,6 +27,28 @@
       perPage: 40,
       experimental: true,
       cors: true
+    },
+    {
+      id: 'yandere',
+      name: 'yande.re',
+      api: 'https://yande.re/post.json',
+      tagApi: 'https://yande.re/tag.json?limit=1&name=',
+      autocomplete: 'https://yande.re/autocomplete.php?term={q}',
+      tagsApi: true,
+      format: 'moebooru',
+      perPage: 40,
+      cors: false
+    },
+    {
+      id: 'konachan',
+      name: 'Konachan',
+      api: 'https://konachan.com/post.json',
+      tagApi: 'https://konachan.com/tag.json?limit=1&name=',
+      autocomplete: 'https://konachan.com/autocomplete.php?term={q}',
+      tagsApi: true,
+      format: 'moebooru',
+      perPage: 40,
+      cors: false
     }
   ];
 
@@ -112,6 +84,7 @@
   // Build a full search URL for the current site.
   // gelbooru-family: &tags=&limit=&pid=&json=1
   // danbooru/e621:   ?tags=&limit=&page=
+  // moebooru:        ?tags=&limit=&page= (yande.re / konachan)
   window.buildBooruSearchUrl = function ({ tags = '', limit = 40, page = 0, extra = '' } = {}) {
     const site = window.getCurrentSite();
     if (!site) return null;
@@ -131,7 +104,7 @@
     }
 
     let url;
-    if (site.format === 'danbooru' || site.format === 'e621') {
+    if (site.format === 'danbooru' || site.format === 'e621' || site.format === 'moebooru') {
       url = `${site.api}?limit=${limit}&page=${page + 1}`;
       if (finalTags) url += `&tags=${encodeURIComponent(finalTags)}`;
     } else {
@@ -145,10 +118,12 @@
     return url;
   };
 
-  // Build the tag lookup URL (only gelbooru-family sites expose the XML tags API).
+  // Build the tag lookup URL (gelbooru-family uses the XML tags API, moebooru
+  // uses tag.json; both expose tag categories).
   window.buildTagLookupUrl = function () {
     const site = window.getCurrentSite();
     if (!site || !site.tagsApi) return null;
+    if (typeof site.tagApi === 'string' && site.tagApi) return site.tagApi;
     return site.api.replace('s=post', 's=tag');
   };
 
@@ -165,6 +140,21 @@
       : (data && Array.isArray(data.posts) ? data.posts
         : (data && typeof data.id !== 'undefined' ? [data] : []));
     if (!site) return list;
+    if (site.format === 'moebooru') {
+      return list.map(p => ({
+        id: p.id,
+        file_url: p.file_url,
+        sample_url: p.sample_url || p.file_url,
+        preview_url: p.preview_url || p.sample_url || p.file_url,
+        tags: p.tags || '',
+        score: typeof p.score === 'number' ? p.score : 0,
+        width: p.width,
+        height: p.height,
+        created_at: p.created_at,
+        source: p.source || '',
+        format: p.file_ext || (p.file_url ? p.file_url.split('.').pop() : '')
+      }));
+    }
     if (site.format === 'danbooru') {
       return list.map(p => ({
         id: p.id,
