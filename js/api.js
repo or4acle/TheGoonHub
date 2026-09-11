@@ -17,13 +17,31 @@ window.proxifyUrl = function proxifyUrl(originalUrl) {
 // some networks/IPs, serves a challenge page WITHOUT Access-Control-Allow-
 // Origin (status 200). Browsers then throw at read time. If that happens and a
 // user proxy is configured, retry the exact same request through it.
+//
+// Deliberately does NOT use the shared throttledFetch queue: a doomed MangaDex
+// request (blocked CORS) used to occupy the homepage feed's rate-limiter with
+// multi-second backoffs, stalling the Rule34 home grid for ~20s on affected
+// networks. MangaDex now retries on its own isolated schedule.
+const mdFetchDirect = async function mdFetchDirect(url, options, attempts) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, options || {});
+      if (res.ok) return res;
+      lastErr = new Error('MangaDex HTTP ' + res.status);
+    } catch (e) {
+      lastErr = e;
+    }
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 1500));
+  }
+  throw lastErr;
+};
 window.mdFetch = async function mdFetch(url, options) {
-  const attempt = (target) => throttledFetch(target, options || {});
   try {
-    return await attempt(url);
+    return await mdFetchDirect(url, options, 2);
   } catch (err) {
     if (PROXY && url.indexOf(PROXY) !== 0) {
-      return await attempt(PROXY + encodeURIComponent(url));
+      return await mdFetchDirect(PROXY + encodeURIComponent(url), options, 2);
     }
     throw err;
   }

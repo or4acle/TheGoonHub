@@ -10,9 +10,10 @@
       id: 'rule34',
       name: 'Rule34',
       api: 'https://api.rule34.xxx/index.php?page=dapi&s=post&q=index',
-      // NOTE: Rule34's s=tag endpoint REQUIRES authentication (returns
-      // "Missing authentication" otherwise). In a client-side app the key is
-      // necessarily visible; keep posts keyless (they allow anonymous access).
+      // Rule34 now requires API-key auth on its public dapi endpoints (tags AND
+      // posts both return "Missing authentication" without it). In a client-side
+      // app the key is necessarily visible.
+      authKey: 'api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624',
       tagApi: 'https://api.rule34.xxx/index.php?page=dapi&s=tag&q=index&api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624&name=',
       autocomplete: 'https://api.rule34.xxx/autocomplete.php?q={q}',
       tagsApi: true,
@@ -115,6 +116,7 @@
       if (finalTags) {
         url += `&tags=${encodeURIComponent(finalTags).replace(/%2B/g, '+')}`;
       }
+      if (site.authKey) url += `&${site.authKey}`;
     }
 
     if (extra) url += `&${extra}`;
@@ -133,7 +135,8 @@
   window.getAutocompleteUrl = function (query) {
     const site = window.getCurrentSite();
     const tpl = (site && site.autocomplete) || 'https://api.rule34.xxx/autocomplete.php?q={q}';
-    return tpl.replace('{q}', encodeURIComponent(query));
+    const url = tpl.replace('{q}', encodeURIComponent(query));
+    return site && site.authKey ? url + (url.includes('?') ? '&' : '?') + site.authKey : url;
   };
 
   // Normalize posts from any supported site into the Rule34-shape the UI expects.
