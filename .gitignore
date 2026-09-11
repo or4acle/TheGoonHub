@@ -1,0 +1,42 @@
+# This .gitignore is appropriate for repositories deployed to GitHub Pages and using
+# a Gemfile as specified at https://github.com/github/pages-gem#conventional
+
+# Basic Jekyll gitignores (synchronize to Jekyll.gitignore)
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+
+# Additional Ruby/bundler ignore for when you run: bundle install
+/vendor
+
+# Specific ignore for GitHub Pages
+# GitHub Pages will always use its own deployed version of pages-gem 
+# This means GitHub Pages will NOT use your Gemfile.lock and therefore it is
+# counterproductive to check this file into the repository.
+# Details at https://github.com/github/pages-gem/issues/768
+Gemfile.lock
+
+# Local dev scratch files (noise from CORS experiments and refactors)
+allorigins.json
+allorigins_raw.json
+codetabs.txt
+codetabs2.txt
+codetabs3.txt
+cors11ty.txt
+corssh.txt
+dev_headers.txt
+thingproxy.txt
+test.json
+test_cors.html
+list_styles.js
+refactor_index.js
+refactor_js.js
+
+# Editor folders
+.idea/
+.vscode/
+
+# Local storage / caches
+node_modules/
+*.log

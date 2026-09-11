@@ -1,0 +1,15 @@
+{
+  "name": "r34-media-hub-pro",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Advanced multi-site media browser (Rule34/Gelbooru/Danbooru/e621 + MangaDex) with a local vault and recommendation engine. Runs fully client-side.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "UNLICENSED"
+}

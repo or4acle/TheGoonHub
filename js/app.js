@@ -1,0 +1,2477 @@
+window.searchRequestVersion = 0;
+let currentTags = '';
+let currentPage = 0;
+let cachedPosts = [];
+window.cachedVaultPosts = [];
+let currentPostIndex = -1;
+
+let tagsArray = [];
+let autocompleteTimeout;
+let activeSuggestionIdx = -1;
+let activePrefixModifier = '';
+const tagCategoriesMap = new Map();
+let isViewingVault = false;
+let isLoading = false; // State to prevent multiple simultaneous loads
+let hasMore = true; // State to track if there are more results to load
+
+// --- Background Tag Resolver for Coloring ---
+const tagResolverQueue = new Set();
+let isResolvingTags = false;
+
+async function processTagResolverQueue() {
+  if (tagResolverQueue.size === 0) {
+    isResolvingTags = false;
+    return;
+  }
+  isResolvingTags = true;
+
+  const tag = tagResolverQueue.values().next().value;
+  tagResolverQueue.delete(tag);
+
+  if (typeof algoTagsCache !== 'undefined' && !algoTagsCache[tag] && typeof fetchTagType === 'function') {
+    await fetchTagType(tag);
+    if (typeof localforage !== 'undefined') {
+      localforage.setItem('r34_tag_types', algoTagsCache);
+    }
+
+    // Re-color DOM elements dynamically if they are still visible
+    document.querySelectorAll(`.lb-stream-tag[data-tag="${tag}"]`).forEach(el => {
+      const type = algoTagsCache[tag];
+      if (type === 'character') el.style.borderColor = '#34d399';
+      if (type === 'artist') el.style.borderColor = '#fbbf24';
+      if (type === 'copyright') el.style.borderColor = '#a78bfa';
+    });
+  }
+
+  setTimeout(processTagResolverQueue, 1500); // Very slow to avoid rate limits (1.5s)
+}
+
+window.queueTagForResolution = function (tag) {
+  if (typeof algoTagsCache !== 'undefined' && !algoTagsCache[tag]) {
+    tagResolverQueue.add(tag);
+    if (!isResolvingTags) processTagResolverQueue();
+  }
+};
+
+const searchContainer = document.getElementById('search-container');
+const tagPillsList = document.getElementById('tag-pills-list');
+const input = document.getElementById('search-input');
+const autocompleteBox = document.getElementById('autocomplete-box');
+
+let _timeframeVal = 'all';
+const timeframeSelect = {
+  get value() { return _timeframeVal; },
+  set value(v) { _timeframeVal = v; }
+};
+
+let _sortVal = 'algo:discover';
+const sortSelect = {
+  get value() { return _sortVal; },
+  set value(v) { _sortVal = v; }
+};
+const grid = document.getElementById('grid');
+const statusEl = document.getElementById('status');
+const metaRow = document.getElementById('meta-row');
+const resultCount = document.getElementById('result-count');
+const activeFilters = document.getElementById('active-filters'); // Keep this for filter badges
+const paginationBox = document.getElementById('pagination-controls-box');
+const scrollSentinel = document.getElementById('scroll-sentinel'); // Element to observe for infinite scroll
+const vaultToggleBtn = document.getElementById('vault-toggle');
+
+
+const toast = document.getElementById('toast');
+
+let toastTimer;
+function triggerToastNotification(msg) {
+  clearTimeout(toastTimer);
+  toast.textContent = msg;
+  toast.classList.add('show');
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1600);
+}
+
+/** Masonry Calculation Engine **/
+function resizeGridItem(item) {
+  if (!item || !item.isConnected) return;
+  const rowHeight = 10; // Matches grid-auto-rows in CSS
+  const rowGap = 16;    // Matches gap in CSS
+
+  // Use offsetHeight instead of getBoundingClientRect().height because
+  // offsetHeight is NOT affected by CSS transforms (scale), preventing overlap.
+  const rowSpan = Math.ceil((item.offsetHeight + rowGap) / (rowHeight + rowGap));
+  item.style.gridRowEnd = `span ${rowSpan}`;
+}
+
+const pendingMasonryCards = new Set();
+let masonryAnimationFrame = null;
+
+function queueMasonryLayout(cards) {
+  cards.forEach(card => pendingMasonryCards.add(card));
+  if (masonryAnimationFrame) return;
+
+  masonryAnimationFrame = requestAnimationFrame(() => {
+    pendingMasonryCards.forEach(resizeGridItem);
+    pendingMasonryCards.clear();
+    masonryAnimationFrame = null;
+  });
+}
+
+const masonryObserver = new ResizeObserver(entries => {
+  queueMasonryLayout(entries.map(entry => entry.target));
+});
+
+window.refreshMasonryLayout = function (container = document) {
+  const root = container instanceof Element || container instanceof Document ? container : document;
+  queueMasonryLayout(Array.from(root.querySelectorAll('.card:not(.skeleton-card)')));
+};
+
+let masonryResizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(masonryResizeTimer);
+  masonryResizeTimer = setTimeout(() => window.refreshMasonryLayout(), 140);
+}, { passive: true });
+
+window.renderGridSkeletons = function (container, count = 10) {
+  if (!container) return;
+  container.querySelectorAll('.skeleton-card').forEach(card => {
+    masonryObserver.unobserve(card);
+    card.remove();
+  });
+
+  const fragment = document.createDocumentFragment();
+  const cards = [];
+  for (let index = 0; index < count; index += 1) {
+    const card = document.createElement('div');
+    card.className = 'card skeleton-card';
+    card.setAttribute('aria-hidden', 'true');
+    const media = document.createElement('div');
+    media.className = 'skeleton-media';
+    media.style.aspectRatio = index % 3 === 0 ? '3 / 4' : index % 3 === 1 ? '1 / 1' : '4 / 3';
+    card.appendChild(media);
+    fragment.appendChild(card);
+    cards.push(card);
+  }
+  container.setAttribute('aria-busy', 'true');
+  container.appendChild(fragment);
+  cards.forEach(card => masonryObserver.observe(card));
+  queueMasonryLayout(cards);
+};
+
+window.clearGridSkeletons = function (container) {
+  if (!container) return;
+  container.querySelectorAll('.skeleton-card').forEach(card => {
+    masonryObserver.unobserve(card);
+    card.remove();
+  });
+  container.setAttribute('aria-busy', 'false');
+};
+
+window.makeCardKeyboardAccessible = function (card, label) {
+  card.setAttribute('role', 'button');
+  card.tabIndex = 0;
+  card.setAttribute('aria-label', label || 'Open item');
+  card.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      card.click();
+    }
+  });
+};
+
+window.attachMediaFallback = function (card, img, sourceUrl, label = 'Media') {
+  const showFallback = () => {
+    card.classList.remove('is-media-loading');
+    card.setAttribute('aria-busy', 'false');
+    img.style.display = 'none';
+    if (card.querySelector('.media-fallback')) return;
+
+    const fallback = document.createElement('div');
+    fallback.className = 'media-fallback';
+    fallback.innerHTML = `<span class="media-fallback-icon" aria-hidden="true">!</span><span>${label} unavailable</span>`;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'media-retry';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', event => {
+      event.stopPropagation();
+      fallback.remove();
+      card.classList.add('is-media-loading');
+      card.setAttribute('aria-busy', 'true');
+      img.style.display = '';
+      const joiner = sourceUrl.includes('?') ? '&' : '?';
+      img.src = `${sourceUrl}${joiner}retry=${Date.now()}`;
+    });
+    fallback.appendChild(retry);
+    card.appendChild(fallback);
+    window.refreshMasonryLayout(card.parentElement);
+  };
+
+  img.onerror = showFallback;
+  return showFallback;
+};
+
+/** Infinite Scroll Observer **/
+const handleScroll = debounce((entries) => {
+  const isAlgo = (sortSelect && sortSelect.value === 'algo:discover');
+  const isAlgoLoadingSafe = (typeof isAlgoLoading !== 'undefined') ? isAlgoLoading : false;
+  const loading = isAlgo ? isAlgoLoadingSafe : isLoading;
+
+  if (entries[0].isIntersecting && !loading && hasMore && !isViewingVault) {
+    if (typeof loadNextPage === 'function') loadNextPage();
+  }
+}, 250);
+
+const scrollObserver = new IntersectionObserver(handleScroll, {
+  rootMargin: '400px'
+});
+
+scrollObserver.observe(scrollSentinel);
+
+
+
+let likedPosts = JSON.parse(localStorage.getItem('r34_liked_v2') || '[]');
+
+function togglePostLikeStatus(postId) {
+  const idx = likedPosts.indexOf(String(postId));
+  if (idx > -1) {
+    likedPosts.splice(idx, 1);
+  } else {
+    likedPosts.push(String(postId));
+  }
+  if (typeof window.safeLocalStorageSet === 'function') window.safeLocalStorageSet('r34_liked_v2', JSON.stringify(likedPosts));
+  else localStorage.setItem('r34_liked_v2', JSON.stringify(likedPosts));
+}
+
+let currentVaultFolder = 'All';
+
+function getVaultFolders() {
+  const folders = new Set(vaultedFolders);
+  vaultedPosts.forEach(p => { if (p.folder) folders.add(p.folder); });
+
+  const newFoldersArray = Array.from(folders);
+  if (newFoldersArray.length !== vaultedFolders.length) {
+    vaultedFolders = newFoldersArray;
+    localforage.setItem('r34_folders_v2', vaultedFolders);
+  }
+  return newFoldersArray;
+}
+
+function renderVaultFoldersNav() {
+  const nav = document.getElementById('vault-folders-nav');
+  if (!nav) return;
+  nav.innerHTML = '';
+  
+  const imagePosts = vaultedPosts.filter(p => !p.mangaObject);
+  const folders = ['All', ...getVaultFolders()];
+
+  folders.forEach(f => {
+    const btn = document.createElement('div');
+    btn.className = 'pinterest-folder-card' + (f === currentVaultFolder ? ' active' : '');
+
+    // Find images for this stack
+    let stackImages = [];
+    let count = 0;
+
+    if (f === 'All') {
+      stackImages = imagePosts.slice(0, 3);
+      count = imagePosts.length;
+    } else if (f === 'Default') {
+      const defPosts = imagePosts.filter(p => !p.folder || p.folder === 'Default');
+      stackImages = defPosts.slice(0, 3);
+      count = defPosts.length;
+    } else {
+      const customPosts = imagePosts.filter(p => p.folder === f);
+      stackImages = customPosts.slice(0, 3);
+      count = customPosts.length;
+    }
+
+    let mainImgHtml = '';
+    let sideImgHtml = '';
+    
+    if (count === 0) {
+      mainImgHtml = `<div class="folder-thumbnail-placeholder" style="display:flex;align-items:center;justify-content:center;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.2;color:#fff;"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg></div>`;
+      sideImgHtml = `<div class="folder-thumbnail-placeholder"></div><div class="folder-thumbnail-placeholder"></div>`;
+    } else {
+      let imgUrls = stackImages.map(p => p.preview_url || p.sample_url || p.file_url).filter(Boolean);
+      
+      mainImgHtml = imgUrls[0] ? `<img src="${imgUrls[0]}" loading="lazy" />` : `<div class="folder-thumbnail-placeholder"></div>`;
+      
+      if (imgUrls[1] || imgUrls[2]) {
+        sideImgHtml += imgUrls[1] ? `<img src="${imgUrls[1]}" loading="lazy" />` : `<div class="folder-thumbnail-placeholder"></div>`;
+        sideImgHtml += imgUrls[2] ? `<img src="${imgUrls[2]}" loading="lazy" />` : `<div class="folder-thumbnail-placeholder"></div>`;
+      } else {
+        sideImgHtml += `<div class="folder-thumbnail-placeholder"></div><div class="folder-thumbnail-placeholder"></div>`;
+      }
+    }
+
+    btn.innerHTML = `
+      <div class="folder-grid-container">
+        <div class="folder-grid">
+          <div class="folder-grid-main">
+            ${mainImgHtml}
+          </div>
+          <div class="folder-grid-side">
+            ${sideImgHtml}
+          </div>
+        </div>
+        <div class="glass-folder-overlay-pinterest"></div>
+        <svg class="glass-folder-border-pinterest" viewBox="-0.4 -23.4 33.8 23.8" preserveAspectRatio="xMidYMid meet" width="100%" height="100%">
+          <path d="M 0 -3 L 0.5 -1.5 L 1.5 -0.5 L 3 0 L 30 0 L 31.5 -0.5 L 32.5 -1.5 L 33 -3 L 33 -20 L 32.5 -21.5 L 31.5 -22.5 L 30 -23 L 21 -23 L 20 -22.8 L 19.3 -22.3 L 14.7 -17.7 L 14 -17.2 L 13 -17 L 3 -17 L 1.5 -16.5 L 0.5 -15.5 L 0 -14 Z" fill="none" stroke="rgba(255,255,255,0.8)" stroke-width="3" vector-effect="non-scaling-stroke"/>
+        </svg>
+        ${f !== 'All' && f !== 'Default' ? `
+          <button class="folder-edit-btn-pinterest" title="Folder Settings">
+            <img src="Icons/icons8-pen-48.png" alt="Edit">
+          </button>
+        ` : ''}
+      </div>
+      <div class="pinterest-folder-info">
+        <div class="pinterest-folder-title">${f}</div>
+        <div class="pinterest-folder-count">${count} Posts</div>
+      </div>
+    `;
+
+    const editBtn = btn.querySelector('.folder-edit-btn-pinterest');
+    if (editBtn) {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nameField = document.getElementById('new-folder-name');
+        nameField.value = f;
+        nameField.readOnly = false;
+        nameField.style.opacity = '1';
+        document.getElementById('new-folder-title').textContent = 'Folder Settings';
+
+        const settings = vaultFolderSettings[f] || { isPublic: false, useInAlgo: true };
+        document.getElementById('new-folder-visibility').value = settings.isPublic ? 'public' : 'private';
+        document.getElementById('new-folder-algo').checked = settings.useInAlgo !== false;
+
+        const submitBtn = document.getElementById('new-folder-submit');
+        submitBtn.textContent = 'Save Settings';
+        submitBtn.setAttribute('data-editing-folder', f);
+
+        const deleteBtn = document.getElementById('modal-delete-folder-btn');
+        if (deleteBtn) {
+          deleteBtn.style.display = 'block';
+          deleteBtn.setAttribute('data-folder', f);
+        }
+
+        newFolderModal.style.display = 'flex';
+      });
+    }
+
+    btn.addEventListener('click', () => {
+      currentVaultFolder = f;
+      renderVaultGridToDedicatedView();
+      renderVaultFoldersNav();
+    });
+    
+    // Setup drag-and-drop dropzones
+    btn.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      btn.classList.add('drag-over');
+    });
+    btn.addEventListener('dragleave', (e) => {
+      btn.classList.remove('drag-over');
+    });
+    btn.addEventListener('drop', (e) => {
+      e.preventDefault();
+      btn.classList.remove('drag-over');
+      
+      const dragType = e.dataTransfer.getData('text/plain');
+      if (dragType === 'bulk-drag' && selectedVaultPosts.size > 0) {
+        const targetFolder = (f === 'All') ? 'Default' : f;
+        vaultedPosts.forEach(p => {
+          if (selectedVaultPosts.has(String(p.id))) {
+            p.folder = targetFolder;
+          }
+        });
+        localforage.setItem('r34_vault_v2', vaultedPosts);
+        if (typeof animateItemsToFolder === 'function') {
+          animateItemsToFolder(targetFolder, () => {
+            document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+            toggleBulkMode();
+            if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+          });
+        } else {
+          document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+          toggleBulkMode();
+          if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+        }
+      }
+    });
+
+    nav.appendChild(btn);
+  });
+
+  if (typeof renderHomeFolderTabs === 'function') {
+    renderHomeFolderTabs();
+  }
+}
+
+function renderHomeFolderTabs() {
+  if (typeof window.invalidateAlgoDnaCache === 'function') {
+    window.invalidateAlgoDnaCache();
+  }
+  const container = document.getElementById('home-folders-nav');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const folders = ['All', ...getVaultFolders()];
+  
+  folders.forEach(f => {
+    // Determine active status: window.algoTargetFolder matches f, or f === 'All' and window.algoTargetFolder is null
+    const isActive = (f === 'All' && !window.algoTargetFolder) || (window.algoTargetFolder === f);
+    
+    // Calculate post count in this folder to verify if it has saved content
+    let folderCount = 0;
+    if (f === 'All') {
+      folderCount = vaultedPosts.length;
+    } else if (f === 'Default') {
+      folderCount = vaultedPosts.filter(p => !p.folder || p.folder === 'Default').length;
+    } else {
+      folderCount = vaultedPosts.filter(p => p.folder === f).length;
+    }
+    
+    // Only display folder tab if it actually contains items (All is always shown)
+    if (f !== 'All' && folderCount === 0) return;
+
+    const tab = document.createElement('div');
+    tab.className = 'home-folder-tab' + (isActive ? ' active' : '');
+    tab.textContent = f;
+    tab.title = f === 'All' ? 'Personalized algorithm feed' : `Recommendations matching ${f}`;
+
+    tab.addEventListener('click', () => {
+      // If clicking already active folder tab, toggle back to 'All'
+      if (isActive) {
+        if (f === 'All') return; // Clicking All again does nothing
+        window.algoTargetFolder = null;
+      } else {
+        window.algoTargetFolder = f === 'All' ? null : f;
+      }
+
+      // Clear search query
+      tagsArray = [];
+      if (typeof renderPills === 'function') renderPills();
+      if (input) input.value = '';
+      currentTags = '';
+
+      // Force sort select to algo:discover
+      if (sortSelect) {
+        sortSelect.value = 'algo:discover';
+      }
+      if (typeof updateSortButtonsUI === 'function') {
+        updateSortButtonsUI('algo:discover');
+      }
+
+      renderHomeFolderTabs(); // Re-render tabs to reflect active highlight
+      doSearch();
+    });
+
+    container.appendChild(tab);
+  });
+}
+
+// New Folder Modal Logic
+const newFolderModal = document.getElementById('new-folder-modal');
+const newFolderBtn = document.getElementById('vault-new-folder-btn');
+const newFolderCloseBtn = document.getElementById('new-folder-close');
+const newFolderCancelBtn = document.getElementById('new-folder-cancel');
+const newFolderSubmitBtn = document.getElementById('new-folder-submit');
+
+if (newFolderBtn) {
+  newFolderBtn.addEventListener('click', () => {
+    const nameField = document.getElementById('new-folder-name');
+    nameField.value = '';
+    nameField.readOnly = false;
+    nameField.style.opacity = '1';
+    document.getElementById('new-folder-title').textContent = 'Create New Folder';
+    document.getElementById('new-folder-visibility').value = 'private';
+    document.getElementById('new-folder-algo').checked = true;
+    
+    const submitBtn = document.getElementById('new-folder-submit');
+    submitBtn.textContent = 'Create Folder';
+    submitBtn.removeAttribute('data-editing-folder');
+    
+    const deleteBtn = document.getElementById('modal-delete-folder-btn');
+    if (deleteBtn) {
+      deleteBtn.style.display = 'none';
+      deleteBtn.removeAttribute('data-folder');
+    }
+
+    newFolderModal.style.display = 'flex';
+  });
+}
+
+function closeNewFolderModal() {
+  newFolderModal.style.display = 'none';
+}
+
+if (newFolderCloseBtn) newFolderCloseBtn.addEventListener('click', closeNewFolderModal);
+if (newFolderCancelBtn) newFolderCancelBtn.addEventListener('click', closeNewFolderModal);
+
+if (newFolderSubmitBtn) {
+  newFolderSubmitBtn.addEventListener('click', () => {
+    const nameInput = document.getElementById('new-folder-name').value.trim();
+    const visibility = document.getElementById('new-folder-visibility').value;
+    const useAlgo = document.getElementById('new-folder-algo').checked;
+
+    if (!nameInput) {
+      alert("Please enter a folder name.");
+      return;
+    }
+
+    const originalName = newFolderSubmitBtn.getAttribute('data-editing-folder');
+
+    // If renaming an existing folder
+    if (originalName && originalName !== nameInput) {
+      if (vaultedFolders.includes(nameInput)) {
+        alert("A folder with this name already exists.");
+        return;
+      }
+      
+      const folderIndex = vaultedFolders.indexOf(originalName);
+      if (folderIndex > -1) {
+        vaultedFolders[folderIndex] = nameInput;
+      }
+      localforage.setItem('r34_folders_v2', vaultedFolders);
+      
+      if (vaultFolderSettings[originalName]) {
+        vaultFolderSettings[nameInput] = vaultFolderSettings[originalName];
+        delete vaultFolderSettings[originalName];
+      }
+      
+      let postsChanged = false;
+      vaultedPosts.forEach(p => {
+        if (p.folder === originalName) {
+          p.folder = nameInput;
+          postsChanged = true;
+        }
+      });
+      if (postsChanged) {
+        localforage.setItem('r34_vault_v2', vaultedPosts);
+      }
+      
+      if (currentVaultFolder === originalName) {
+        currentVaultFolder = nameInput;
+      }
+    } 
+    // If creating a new folder
+    else if (!originalName) {
+      if (!vaultedFolders.includes(nameInput)) {
+        vaultedFolders.push(nameInput);
+        localforage.setItem('r34_folders_v2', vaultedFolders);
+      } else {
+        alert("A folder with this name already exists.");
+        return;
+      }
+      currentVaultFolder = nameInput;
+    }
+
+    // Save visibility settings
+    vaultFolderSettings[nameInput] = {
+      isPublic: visibility === 'public',
+      useInAlgo: useAlgo
+    };
+    localforage.setItem('r34_folder_settings_v1', vaultFolderSettings);
+
+    renderVaultGridToDedicatedView();
+    renderVaultFoldersNav();
+    closeNewFolderModal();
+  });
+}
+
+let currentSavePost = null;
+let currentSaveAnchor = null;
+let currentSaveCallback = null;
+
+const saveModalOverlay = document.getElementById('save-modal-overlay');
+const saveModalClose = document.getElementById('save-modal-close');
+const saveModalSearch = document.getElementById('save-modal-search');
+const saveModalFolders = document.getElementById('save-modal-folders');
+const saveModalNewInput = document.getElementById('save-modal-new-input');
+const saveModalNewBtn = document.getElementById('save-modal-new-btn');
+
+function renderSaveModalFolders(filterText = '') {
+  if (!saveModalFolders) return;
+  saveModalFolders.innerHTML = '';
+  const folders = getVaultFolders();
+
+  folders.filter(f => f.toLowerCase().includes(filterText.toLowerCase())).forEach(f => {
+    const item = document.createElement('button');
+    item.className = 'save-folder-item';
+    item.style.display = 'flex';
+    item.style.justifyContent = 'space-between';
+    item.style.alignItems = 'center';
+    item.style.width = '100%';
+    item.style.padding = '12px 16px';
+    item.style.borderRadius = '8px';
+
+    const isSavedInHere = vaultedPosts.some(p => String(p.id) === String(currentSavePost.id) && (p.folder || 'Default') === f);
+
+    item.innerHTML = `<span>${f}</span><span class="${isSavedInHere ? 'text-purple font-bold' : 'text-muted font-bold'}">${isSavedInHere ? 'Saved' : 'Save'}</span>`;
+
+    item.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+
+      const idx = vaultedPosts.findIndex(p => String(p.id) === String(currentSavePost.id));
+      if (idx > -1) vaultedPosts.splice(idx, 1);
+
+      if (!isSavedInHere) {
+        currentSavePost.folder = f;
+        vaultedPosts.unshift(currentSavePost);
+      }
+
+      localforage.setItem('r34_vault_v2', vaultedPosts);
+      syncVaultCounterDisplay();
+      const isNowSaved = vaultedPosts.some(p => String(p.id) === String(currentSavePost.id));
+
+      if (currentSaveCallback) {
+        currentSaveCallback(isNowSaved, currentSaveAnchor);
+      } else {
+        currentSaveAnchor.textContent = isNowSaved ? 'Saved' : 'Save';
+        currentSaveAnchor.style.backgroundColor = isNowSaved ? '#8b5cf6' : '#ff5e97';
+      }
+
+      renderSaveModalFolders(saveModalSearch.value);
+
+      const viewVault = document.getElementById('view-vault');
+      if (viewVault && viewVault.style.display !== 'none') {
+        renderVaultGridToDedicatedView();
+        renderVaultFoldersNav();
+      }
+    });
+    saveModalFolders.appendChild(item);
+  });
+}
+
+if (saveModalClose) saveModalClose.addEventListener('click', () => saveModalOverlay.style.display = 'none');
+if (saveModalSearch) saveModalSearch.addEventListener('input', (e) => renderSaveModalFolders(e.target.value));
+if (saveModalOverlay) saveModalOverlay.addEventListener('click', (e) => { if (e.target === saveModalOverlay) saveModalOverlay.style.display = 'none'; });
+
+if (saveModalNewBtn) {
+  saveModalNewBtn.addEventListener('click', () => {
+    const newFolder = saveModalNewInput.value.trim();
+    if (newFolder) {
+      if (!vaultedFolders.includes(newFolder)) {
+        vaultedFolders.push(newFolder);
+        localforage.setItem('r34_folders_v2', vaultedFolders);
+      }
+
+      const idx = vaultedPosts.findIndex(p => String(p.id) === String(currentSavePost.id));
+      if (idx > -1) vaultedPosts.splice(idx, 1);
+
+      currentSavePost.folder = newFolder;
+      vaultedPosts.unshift(currentSavePost);
+      localforage.setItem('r34_vault_v2', vaultedPosts);
+      syncVaultCounterDisplay();
+
+      if (currentSaveCallback) {
+        currentSaveCallback(true, currentSaveAnchor);
+      } else {
+        currentSaveAnchor.textContent = 'Saved';
+        currentSaveAnchor.style.backgroundColor = '#8b5cf6';
+      }
+
+      saveModalNewInput.value = '';
+      renderSaveModalFolders();
+
+      const viewVault = document.getElementById('view-vault');
+      if (viewVault && viewVault.style.display !== 'none') {
+        renderVaultGridToDedicatedView();
+        renderVaultFoldersNav();
+      }
+    }
+  });
+}
+
+if (saveModalNewInput) {
+  saveModalNewInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveModalNewBtn.click();
+  });
+}
+
+window.suggestFolderForPost = function(post) {
+  const folders = typeof getVaultFolders === 'function' ? getVaultFolders() : vaultedFolders;
+  if (!folders || folders.length === 0) return 'Saved';
+  
+  const postTags = (post.tags || '').split(/\s+/).filter(Boolean);
+  if (postTags.length === 0) return folders[0] || 'Saved';
+
+  let bestFolder = folders[0] || 'Saved';
+  let bestScore = -1;
+
+  folders.forEach(folder => {
+    const postsInFolder = vaultedPosts.filter(p => p.folder === folder);
+    if (postsInFolder.length === 0) return;
+
+    let score = 0;
+    postsInFolder.forEach(fp => {
+      const fpTags = (fp.tags || '').split(/\s+/).filter(Boolean);
+      const matches = postTags.filter(t => fpTags.includes(t)).length;
+      score += matches;
+    });
+
+    const normalizedScore = score / postsInFolder.length;
+
+    if (normalizedScore > bestScore) {
+      bestScore = normalizedScore;
+      bestFolder = folder;
+    }
+  });
+
+  return bestScore > 0 ? bestFolder : (folders[0] || 'Saved');
+};
+
+window.saveMangaToBookshelf = function(post, folderName, btnElement) {
+  if (folderName === '_new_') {
+    const newName = prompt("Enter new bookshelf name:");
+    if (!newName) return;
+    folderName = newName.trim();
+  }
+  
+  if (folderName && folderName !== 'All' && !vaultedMangaFolders.includes(folderName)) {
+    vaultedMangaFolders.push(folderName);
+    localforage.setItem('r34_manga_folders_v2', vaultedMangaFolders);
+  }
+
+  const idx = vaultedManga.findIndex(p => String(p.id) === String(post.id));
+  if (idx > -1) vaultedManga.splice(idx, 1);
+
+  post.folder = folderName;
+  vaultedManga.unshift(post);
+  localforage.setItem('r34_vault_manga_v2', vaultedManga);
+  
+  if (typeof syncVaultCounterDisplay === 'function') syncVaultCounterDisplay();
+  
+  if (btnElement) {
+    btnElement.textContent = 'Saved';
+    btnElement.classList.add('saved');
+  }
+
+  const viewVault = document.getElementById('view-vault');
+  if (viewVault && viewVault.style.display !== 'none') {
+    if (typeof renderVaultGridToDedicatedView === 'function') renderVaultGridToDedicatedView();
+  }
+};
+
+window.savePostToFolder = function(post, folderName, btnElement) {
+  if (folderName === '_new_') {
+    const newName = prompt("Enter new folder name:");
+    if (!newName) return;
+    folderName = newName.trim();
+  }
+  
+  if (folderName && folderName !== 'Manga' && !vaultedFolders.includes(folderName)) {
+    vaultedFolders.push(folderName);
+    localforage.setItem('r34_folders_v2', vaultedFolders);
+  }
+
+  const idx = vaultedPosts.findIndex(p => String(p.id) === String(post.id));
+  if (idx > -1) vaultedPosts.splice(idx, 1);
+
+  post.folder = folderName;
+  vaultedPosts.unshift(post);
+  localforage.setItem('r34_vault_v2', vaultedPosts);
+  
+  if (typeof syncVaultCounterDisplay === 'function') syncVaultCounterDisplay();
+  
+  if (btnElement) {
+    btnElement.textContent = 'Saved';
+    btnElement.classList.add('saved');
+  }
+
+  const viewVault = document.getElementById('view-vault');
+  if (viewVault && viewVault.style.display !== 'none') {
+    if (typeof renderVaultGridToDedicatedView === 'function') renderVaultGridToDedicatedView();
+    if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+  }
+  
+  // Re-render home folder nav so new/empty folders show up immediately once an item is added
+  if (typeof renderHomeFolderTabs === 'function') renderHomeFolderTabs();
+};
+
+function openFolderMenu(e, post, anchorBtn, onUpdateCallback = null) {
+  e.stopPropagation();
+  currentSavePost = post;
+  currentSaveAnchor = anchorBtn;
+  currentSaveCallback = onUpdateCallback;
+
+  if (saveModalSearch) saveModalSearch.value = '';
+  if (saveModalNewInput) saveModalNewInput.value = '';
+  renderSaveModalFolders();
+
+  if (saveModalOverlay) saveModalOverlay.style.display = 'flex';
+}
+
+function injectPostCardsIntoGrid(data, targetContainer = grid) {
+  if (typeof window.clearGridSkeletons === 'function') window.clearGridSkeletons(targetContainer);
+  targetContainer.classList.remove('is-filtering');
+  const fragment = document.createDocumentFragment();
+  const newCards = []; // Store references for batch layout calculation
+
+  const isVault = targetContainer.id === 'vault-grid';
+  const plopStagger = isVault ? 50 : 40; // ms between each card's plop
+
+  data.forEach((post, index) => {
+    const fileUrl = post.file_url || post.sample_url || post.preview_url;
+    const previewUrl = post.preview_url || post.sample_url || post.file_url;
+    if (!fileUrl) return;
+    const ext = fileUrl.split('.').pop().toLowerCase();
+    const isVideo = ['mp4', 'webm'].includes(ext);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.classList.add('is-media-loading');
+    card.setAttribute('aria-busy', 'true');
+    if (typeof window.makeCardKeyboardAccessible === 'function') {
+      window.makeCardKeyboardAccessible(card, isVideo ? 'Open video' : 'Open image');
+    }
+
+    // Detect extreme vertical aspect ratios (comic strips) to prevent layout breakage
+    if (post.height && post.width && (post.height / post.width > 2.5)) {
+      card.classList.add('comic-strip');
+    }
+
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.decoding = 'async'; // Offload image decoding from main thread
+    img.alt = '';
+
+    // Performance: Pre-allocate image height using aspect-ratio so the DOM 
+    // doesn't have to wait for the image to download to calculate the layout.
+    if (post.width && post.height) {
+      img.style.aspectRatio = `${post.width} / ${post.height}`;
+    }
+
+    img.style.opacity = '0';
+    img.style.transition = 'opacity 0.35s cubic-bezier(0.25, 0.1, 0.25, 1)';
+
+    // Plop delay based on DOM index (not load order) so cards always
+    // appear top-left → bottom-right regardless of which image loads first.
+    const plopDelay = Math.min(index * plopStagger, 2000);
+
+    img.onload = () => {
+      setTimeout(() => {
+        card.classList.remove('is-media-loading');
+        card.setAttribute('aria-busy', 'false');
+        img.style.opacity = '1';
+        card.classList.add('plop-in');
+        if (typeof window.refreshMasonryLayout === 'function') window.refreshMasonryLayout(card.parentElement);
+      }, plopDelay);
+    };
+
+    if (typeof window.attachMediaFallback === 'function') {
+      window.attachMediaFallback(card, img, previewUrl, isVideo ? 'Video preview' : 'Image');
+    }
+    card.appendChild(img);
+    if (typeof window.deferMediaLoad === 'function') window.deferMediaLoad(img, previewUrl);
+    else img.src = previewUrl;
+    if (isVideo) {
+      const label = document.createElement('div');
+      label.className = 'video-badge';
+      label.innerHTML = '<img src="Icons/icons8-no-video-48.png" width="16" height="16" style="filter: invert(1); margin-right: 4px; vertical-align: middle;"> VIDEO';
+      card.appendChild(label);
+      card.addEventListener('mouseenter', () => {
+        if (typeof isVaultBulkMode !== 'undefined' && isVaultBulkMode) return;
+        const v = document.createElement('video');
+        v.src = typeof getOptimizedVideoUrl === 'function' ? getOptimizedVideoUrl(fileUrl) : fileUrl; v.muted = true; v.loop = true; v.playsInline = true; v.disablePictureInPicture = true; v.controlsList = "nodownload noplaybackrate"; v.className = 'hover-video';
+        v.style.pointerEvents = 'none'; // Block Opera UI injections
+        card.appendChild(v); v.play().catch(() => { });
+      });
+      card.addEventListener('mouseleave', () => {
+        const v = card.querySelector('.hover-video'); if (v) v.remove();
+      });
+    }
+
+    // Pinterest Save Widget (Only show outside the vault)
+    const isVaultContainerCheck = (targetContainer && targetContainer.id === 'vault-grid');
+    if (!isVaultContainerCheck) {
+      const saveWidget = document.createElement('div');
+      saveWidget.className = 'pinterest-save-widget';
+
+      const folderWrapper = document.createElement('div');
+      folderWrapper.className = 'custom-select-wrapper';
+
+      const folderBtn = document.createElement('button');
+      folderBtn.className = 'pinterest-folder-select';
+
+      const folderList = document.createElement('ul');
+      folderList.className = 'custom-options-list card-folder-list';
+
+      const suggestedInit = typeof suggestFolderForPost === 'function'
+        ? suggestFolderForPost(post)
+        : ((typeof getVaultFolders === 'function' ? getVaultFolders() : vaultedFolders)[0] || 'Saved');
+
+      folderBtn.textContent = suggestedInit;
+      folderWrapper.dataset.value = suggestedInit;
+
+      const refreshFolderList = () => {
+        const currentFolders = typeof getVaultFolders === 'function' ? getVaultFolders() : vaultedFolders;
+        const currentValue = folderWrapper.dataset.value;
+        folderList.innerHTML = '';
+
+        const folderSet = new Set(currentFolders);
+        folderSet.add(currentValue);
+
+        Array.from(folderSet).forEach(f => {
+          let folderPost = null;
+          for (let i = vaultedPosts.length - 1; i >= 0; i--) {
+            if ((vaultedPosts[i].folder || 'Default') === f) {
+              folderPost = vaultedPosts[i];
+              break;
+            }
+          }
+          const thumbUrl = folderPost ? (folderPost.preview_url || folderPost.sample_url || folderPost.file_url) : null;
+
+          const li = document.createElement('li');
+          li.className = 'folder-dropdown-item';
+          if (f === currentValue) li.classList.add('selected');
+
+          const label = document.createElement('span');
+          label.className = 'folder-dropdown-label';
+          label.textContent = f;
+          li.appendChild(label);
+
+          if (thumbUrl) {
+            const img = document.createElement('img');
+            img.src = thumbUrl;
+            img.className = 'folder-dropdown-thumb';
+            img.loading = 'lazy';
+            img.draggable = false;
+            li.appendChild(img);
+          } else {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'folder-dropdown-thumb folder-thumb-placeholder';
+            placeholder.textContent = f.charAt(0).toUpperCase();
+            li.appendChild(placeholder);
+          }
+
+          li.addEventListener('click', (e) => {
+            e.stopPropagation();
+            folderWrapper.dataset.value = f;
+            folderBtn.textContent = f;
+            folderList.querySelectorAll('li').forEach(el => el.classList.remove('selected'));
+            li.classList.add('selected');
+            folderWrapper.classList.remove('open');
+            folderList.classList.remove('open');
+            
+            if (typeof savePostToFolder === 'function') {
+              savePostToFolder(post, f, saveBtn);
+            }
+          });
+          folderList.appendChild(li);
+        });
+      };
+
+      refreshFolderList();
+
+      folderBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpening = !folderList.classList.contains('open');
+        if (isOpening) refreshFolderList();
+        folderList.classList.toggle('open');
+        folderWrapper.classList.toggle('open');
+      });
+
+      folderWrapper.appendChild(folderBtn);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'pinterest-save-btn';
+      const isSaved = vaultedPosts.some(p => String(p.id) === String(post.id));
+      if (isSaved) saveBtn.classList.add('saved');
+      saveBtn.textContent = isSaved ? 'Saved' : 'Save';
+
+      saveBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (typeof savePostToFolder === 'function') {
+          savePostToFolder(post, folderWrapper.dataset.value, saveBtn);
+        }
+      });
+
+      saveWidget.appendChild(folderWrapper);
+      saveWidget.appendChild(saveBtn);
+      saveWidget.appendChild(folderList);
+      card.appendChild(saveWidget);
+
+      card.addEventListener('mouseleave', () => {
+        folderList.classList.remove('open');
+        folderWrapper.classList.remove('open');
+      });
+    } else {
+      // Add a small remove button in the top right for Vault view
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'vault-card-remove-btn';
+      removeBtn.title = 'Remove from Vault';
+      
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idStr = String(post.id);
+        const postIndex = vaultedPosts.findIndex(p => String(p.id) === idStr);
+        if (postIndex !== -1) {
+          vaultedPosts.splice(postIndex, 1);
+          if (typeof localforage !== 'undefined') {
+            localforage.setItem('r34_vault_v2', vaultedPosts);
+          }
+          card.style.opacity = '0';
+          card.style.pointerEvents = 'none';
+          setTimeout(() => {
+            card.remove();
+            if (typeof renderVaultGridToDedicatedView === 'function') {
+               renderVaultGridToDedicatedView();
+            }
+            if (typeof renderVaultFoldersNav === 'function') {
+               renderVaultFoldersNav();
+            }
+          }, 300);
+          if (typeof triggerToastNotification === 'function') {
+            triggerToastNotification('Removed from Vault');
+          }
+        }
+      });
+      card.appendChild(removeBtn);
+    }
+
+    // Figure out the best title for the card
+    const rawTags = (post.tags || '').split(/\s+/).filter(Boolean);
+    let cardTitle = '';
+
+    // Only display Artist or Character on the grid
+    const artistTag = rawTags.find(t => typeof algoTagsCache !== 'undefined' && algoTagsCache[t] === 'artist');
+    const charTag = rawTags.find(t => typeof algoTagsCache !== 'undefined' && algoTagsCache[t] === 'character');
+
+    if (artistTag) cardTitle = artistTag;
+    else if (charTag) cardTitle = charTag;
+
+    if (cardTitle) {
+      cardTitle = cardTitle.replace(/_/g, ' ');
+      cardTitle = cardTitle.charAt(0).toUpperCase() + cardTitle.slice(1);
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'pinterest-card-footer';
+    footer.innerHTML = `
+      <div class="pinterest-card-title">${cardTitle}</div>
+      <button class="pinterest-card-options" aria-label="More options">
+         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"></path>
+         </svg>
+      </button>
+      <div class="card-options-dropdown">
+         <ul>
+           <li onclick="window.open('${post.file_url}', '_blank'); event.stopPropagation();">
+             <img src="Icons/icons8-download-48.png" class="dropdown-icon" /> Download Image
+           </li>
+           <li onclick="navigator.clipboard.writeText('${post.file_url}'); if(typeof triggerToastNotification === 'function') triggerToastNotification('Image URL copied to clipboard!'); event.stopPropagation();">
+             <img src="Icons/icons8-link-48.png" class="dropdown-icon" /> Share Link
+           </li>
+           <li class="text-danger" onclick="document.getElementById('report-modal').style.display='flex'; event.stopPropagation();">
+             <img src="Icons/icons8-error-30.png" class="dropdown-icon danger-icon" /> Report Image
+           </li>
+         </ul>
+      </div>
+    `;
+
+    const optionsBtn = footer.querySelector('.pinterest-card-options');
+    const dropdown = footer.querySelector('.card-options-dropdown');
+    
+    optionsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Close all other open dropdowns first
+      document.querySelectorAll('.card-options-dropdown.show').forEach(d => {
+        if (d !== dropdown) d.classList.remove('show');
+      });
+      dropdown.classList.toggle('show');
+    });
+
+    dropdown.addEventListener('mouseleave', () => {
+      dropdown.classList.remove('show');
+    });
+
+    // We can use a global event listener to close all dropdowns when clicking outside
+    if (!window.hasCardDropdownListener) {
+      document.addEventListener('click', () => {
+        document.querySelectorAll('.card-options-dropdown.show').forEach(d => d.classList.remove('show'));
+      });
+      window.hasCardDropdownListener = true;
+    }
+
+    card.appendChild(footer);
+    
+    const isVaultContainer = (targetContainer && targetContainer.id === 'vault-grid');
+    if (typeof isVaultBulkMode !== 'undefined' && isVaultBulkMode && isVaultContainer) {
+      card.setAttribute('draggable', 'true');
+      card.addEventListener('dragstart', (e) => {
+        const postIdStr = String(post.id);
+        if (!selectedVaultPosts.has(postIdStr)) {
+          selectedVaultPosts.add(postIdStr);
+          card.classList.add('bulk-selected');
+          const countEl = document.getElementById('bulk-selection-count');
+          if (countEl) countEl.textContent = `${selectedVaultPosts.size} items selected`;
+        }
+        e.dataTransfer.setData('text/plain', 'bulk-drag');
+        e.dataTransfer.effectAllowed = 'move';
+        
+        // Custom drag ghost (using DOM for animation support)
+        const ghostContainer = document.createElement('div');
+        ghostContainer.style.position = 'absolute';
+        ghostContainer.style.top = '-9999px';
+        ghostContainer.style.left = '-9999px';
+        ghostContainer.id = 'active-drag-ghost';
+        
+        const selectedCardsElements = Array.from(document.querySelectorAll('.card.bulk-selected')).slice(0, 3);
+        
+        selectedCardsElements.forEach((sc, i) => {
+          const clone = sc.cloneNode(true);
+          clone.style.position = 'absolute';
+          clone.style.left = '0';
+          clone.style.top = '0';
+          clone.style.width = sc.offsetWidth + 'px';
+          clone.style.height = sc.offsetHeight + 'px';
+          clone.style.transform = `translate(${i * 6}px, ${i * 6}px) rotate(${i * -3}deg)`;
+          clone.style.zIndex = 3 - i;
+          clone.style.opacity = '1';
+          clone.style.boxShadow = '0 10px 25px rgba(0,0,0,0.5)';
+          clone.style.margin = '0';
+          clone.classList.remove('bulk-selected');
+          ghostContainer.appendChild(clone);
+        });
+        
+        if (selectedVaultPosts.size > 1) {
+          const badge = document.createElement('div');
+          badge.textContent = '+' + (selectedVaultPosts.size - 1);
+          badge.style.position = 'absolute';
+          badge.style.bottom = '-10px';
+          badge.style.right = '-10px';
+          badge.style.background = '#e95e8c';
+          badge.style.color = 'white';
+          badge.style.borderRadius = '50%';
+          badge.style.width = '32px';
+          badge.style.height = '32px';
+          badge.style.display = 'flex';
+          badge.style.alignItems = 'center';
+          badge.style.justifyContent = 'center';
+          badge.style.fontWeight = 'bold';
+          badge.style.zIndex = '10';
+          badge.style.boxShadow = '0 2px 8px rgba(0,0,0,0.5)';
+          ghostContainer.appendChild(badge);
+        }
+
+        document.body.appendChild(ghostContainer);
+        
+        // Let the browser handle the drag ghost natively
+        e.dataTransfer.setDragImage(ghostContainer, e.offsetX || 20, e.offsetY || 20);
+        // We intentionally do NOT hide the original cards so the masonry grid doesn't collapse during drag
+      });
+      
+      card.addEventListener('dragend', () => {
+        const ghost = document.getElementById('active-drag-ghost');
+        if (ghost) ghost.remove();
+      });
+    }
+
+    card.addEventListener('click', (e) => {
+      const isVaultView = targetContainer && targetContainer.id === 'vault-grid';
+      if (typeof isVaultBulkMode !== 'undefined' && isVaultBulkMode && isVaultView) {
+        const postIdStr = String(post.id);
+        if (selectedVaultPosts.has(postIdStr)) {
+          selectedVaultPosts.delete(postIdStr);
+          card.classList.remove('bulk-selected');
+        } else {
+          selectedVaultPosts.add(postIdStr);
+          card.classList.add('bulk-selected');
+        }
+        const countEl = document.getElementById('bulk-selection-count');
+        if (countEl) countEl.textContent = `${selectedVaultPosts.size} items selected`;
+        return;
+      }
+
+      let targetArray = null;
+      if (targetContainer && targetContainer.id === 'lb-recommendations-grid') {
+          if (typeof pushLightboxHistory === 'function') pushLightboxHistory();
+          targetArray = window.lbAlgoCache[window.lbAlgoCurrentPostId] || [];
+          window.currentLightboxArray = targetArray;
+      } else {
+          if (typeof clearLightboxHistory === 'function') clearLightboxHistory();
+          window.currentLightboxArray = null;
+          targetArray = isVaultContainer ? (window.cachedVaultPosts || []) : cachedPosts;
+      }
+      
+      const actualIndex = targetArray.findIndex(p => String(p.id) === String(post.id));
+      if (actualIndex > -1) openLightbox(actualIndex);
+    });
+
+    // Observe card for width changes (responsiveness) to update rowSpan
+    masonryObserver.observe(card);
+    fragment.appendChild(card);
+    newCards.push(card);
+  });
+
+  // Inject all 50 cards at once (1 Reflow instead of 50)
+  targetContainer.appendChild(fragment);
+
+  // Synchronized Batch Read-then-Write to completely eliminate layout thrashing
+  // Phase 1: Read Phase — use offsetHeight (immune to CSS transforms like scale)
+  const cardHeights = newCards.map(card => card.offsetHeight);
+
+  // Phase 2: Write Phase
+  const rowHeight = 10;
+  const rowGap = 16;
+  newCards.forEach((card, i) => {
+    const rowSpan = Math.ceil((cardHeights[i] + rowGap) / (rowHeight + rowGap));
+    card.style.gridRowEnd = `span ${rowSpan}`;
+  });
+}
+
+// Global Panic Button (Space + Tab)
+let keysPressed = {};
+document.addEventListener('keydown', (e) => {
+  keysPressed[e.code] = true;
+  if (keysPressed['Space'] && keysPressed['Tab']) {
+    e.preventDefault();
+    window.location.href = 'https://en.wikipedia.org/wiki/Special:Random';
+  }
+});
+document.addEventListener('keyup', (e) => {
+  delete keysPressed[e.code];
+});
+
+let activeVaultTab = 'images';
+
+document.getElementById('vault-main-tabs')?.addEventListener('click', (e) => {
+  if (e.target.classList.contains('vault-tab-btn')) {
+    document.querySelectorAll('.vault-tab-btn').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    activeVaultTab = e.target.dataset.tab;
+
+    // Toggle UI elements if needed
+    const folderNav = document.getElementById('vault-folders-nav');
+    const folderHeader = document.getElementById('vault-active-folder-header');
+    if (activeVaultTab === 'bookshelf') {
+      if (folderNav) folderNav.style.display = 'none';
+      if (folderHeader) folderHeader.style.display = 'none';
+    } else {
+      if (folderNav) folderNav.style.display = 'flex';
+      if (folderHeader) folderHeader.style.display = 'flex';
+    }
+
+    renderVaultGridToDedicatedView();
+  }
+});
+
+function renderVaultGridToDedicatedView() {
+  const vaultGrid = document.getElementById('vault-grid');
+  const vaultStatus = document.getElementById('vault-status');
+  const folderHeader = document.getElementById('vault-active-folder-header');
+  
+  if (folderHeader) {
+    folderHeader.style.display = activeVaultTab === 'bookshelf' ? 'none' : 'flex';
+  }
+
+  vaultGrid.innerHTML = '';
+
+  // Use vaultedManga for bookshelf and vaultedPosts for images
+  let tabFilteredPosts = activeVaultTab === 'bookshelf' ? vaultedManga : vaultedPosts.filter(p => !p.mangaObject);
+
+  const createEmptyStateHtml = (icon, title, message) => `
+    <div style="background: rgba(30, 30, 40, 0.4); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 48px; display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 400px; margin: 40px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="font-size: 3rem; opacity: 0.8;">${icon}</div>
+      <h3 style="margin: 0; font-size: 1.5rem; color: #fff;">${title}</h3>
+      <p style="margin: 0; color: var(--text-muted); font-size: 1rem; text-align: center;">${message}</p>
+      <button onclick="document.getElementById('nav-feed').click()" style="margin-top: 16px; background: var(--accent-purple); color: #fff; border: none; padding: 12px 32px; border-radius: 50px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 4px 15px rgba(233, 94, 140, 0.4);">Go Discover</button>
+    </div>
+  `;
+
+  if (tabFilteredPosts.length === 0) {
+    vaultStatus.style.display = 'block';
+    vaultStatus.innerHTML = activeVaultTab === 'bookshelf'
+      ? createEmptyStateHtml('ðŸ“š', 'Bookshelf Empty', 'Your bookshelf is empty. Save some manga to start your collection!')
+      : createEmptyStateHtml('ðŸ’”', 'Vault Empty', 'Your media vault is empty. Find something you like and save it!');
+    return;
+  }
+
+  const delBtn = document.getElementById('vault-delete-folder-btn');
+  if (delBtn) {
+    delBtn.style.display = (currentVaultFolder === 'Default' || currentVaultFolder === 'All') ? 'none' : 'block';
+  }
+
+  let filteredPosts = tabFilteredPosts;
+  if (activeVaultTab !== 'bookshelf') {
+    filteredPosts = currentVaultFolder === 'All'
+      ? tabFilteredPosts
+      : currentVaultFolder === 'Default'
+        ? tabFilteredPosts.filter(p => !p.folder || p.folder === 'Default')
+        : tabFilteredPosts.filter(p => p.folder === currentVaultFolder);
+  }
+
+  // Apply Vault Local Search filter
+  const searchInput = document.getElementById('vault-search-input');
+  if (searchInput && searchInput.value.trim() !== '') {
+    const query = searchInput.value.trim().toLowerCase();
+    const queryParts = query.split(/\s+/);
+    filteredPosts = filteredPosts.filter(p => {
+      let t = '';
+      if (p.mangaObject) {
+        t = (typeof getMdTitle === 'function' ? getMdTitle(p.mangaObject) : '').toLowerCase();
+        if (p.mangaObject.attributes && p.mangaObject.attributes.tags) {
+          t += ' ' + p.mangaObject.attributes.tags.map(tag => typeof getMdTagName === 'function' ? getMdTagName(tag) : '').join(' ').toLowerCase();
+        }
+      } else {
+        if (!p.tags) return false;
+        t = p.tags.toLowerCase();
+      }
+      return queryParts.every(part => t.includes(part));
+    });
+  }
+
+  const headerName = document.getElementById('vault-active-folder-name');
+  const headerCount = document.getElementById('vault-active-folder-count');
+  if (headerName) headerName.textContent = currentVaultFolder;
+  if (headerCount) {
+    const postWord = filteredPosts.length === 1 ? 'item' : 'items';
+    headerCount.textContent = `${filteredPosts.length} ${postWord}`;
+  }
+
+  if (filteredPosts.length === 0) {
+    vaultStatus.style.display = 'block';
+    vaultStatus.innerHTML = createEmptyStateHtml('ðŸ“', 'Folder Empty', `No matching media found in the ${currentVaultFolder} folder.`);
+    return;
+  }
+
+  const activeSortBtn = document.querySelector('#vault-sort-options .sort-option-btn.active');
+  const sortType = activeSortBtn ? activeSortBtn.getAttribute('data-sort-type') : 'date';
+  const sortDir = activeSortBtn ? activeSortBtn.getAttribute('data-sort-dir') : 'desc';
+
+  // Update the toggle button icon to match the selected sort option
+  const toggleIcon = document.getElementById('vault-sort-toggle-icon');
+  if (toggleIcon && activeSortBtn) {
+    const activeImg = activeSortBtn.querySelector('img');
+    if (activeImg) {
+      toggleIcon.src = activeImg.src;
+      
+      if (sortDir === 'asc') {
+        toggleIcon.classList.add('reversed');
+        activeImg.classList.add('reversed');
+      } else {
+        toggleIcon.classList.remove('reversed');
+        activeImg.classList.remove('reversed');
+      }
+      
+      document.querySelectorAll('#vault-sort-options .sort-option-btn:not(.active) img').forEach(img => {
+        img.classList.remove('reversed');
+      });
+    }
+  }
+
+  // To ensure visual reversal even for items with identical scores, 
+  // we first reverse the whole array if ascending is requested, 
+  // then stable sort by score.
+  if (sortDir === 'asc') {
+    filteredPosts.reverse(); 
+  }
+
+  if (sortType === 'score') {
+    filteredPosts.sort((a, b) => {
+      const scoreA = Number(a.score) || 0;
+      const scoreB = Number(b.score) || 0;
+      return sortDir === 'desc' ? scoreB - scoreA : scoreA - scoreB;
+    });
+  }
+
+  vaultStatus.style.display = 'none';
+  window.cachedVaultPosts = [...filteredPosts]; // Save in vault-specific array so Images grid cachedPosts is never overwritten
+
+  if (activeVaultTab === 'bookshelf' && typeof injectPhysicalBookshelf === 'function') {
+    injectPhysicalBookshelf(filteredPosts, vaultGrid);
+  } else {
+    vaultGrid.className = 'vault-grid-layout'; // restore original class if switching back
+    injectPostCardsIntoGrid(filteredPosts, vaultGrid);
+  }
+}
+
+document.getElementById('vault-search-input')?.addEventListener('input', debounce(renderVaultGridToDedicatedView, 300));
+
+document.getElementById('vault-sort-toggle-btn')?.addEventListener('click', function(e) {
+  e.stopPropagation();
+  const capsule = document.getElementById('vault-sort-capsule');
+  if (capsule) {
+    capsule.classList.toggle('expanded');
+  }
+});
+
+document.addEventListener('click', function(e) {
+  const capsule = document.getElementById('vault-sort-capsule');
+  if (capsule && capsule.classList.contains('expanded') && !capsule.contains(e.target)) {
+    capsule.classList.remove('expanded');
+  }
+});
+
+document.querySelectorAll('#vault-sort-options .sort-option-btn').forEach(btn => {
+  btn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    if (this.classList.contains('active')) {
+      const currentDir = this.getAttribute('data-sort-dir');
+      this.setAttribute('data-sort-dir', currentDir === 'desc' ? 'asc' : 'desc');
+    } else {
+      document.querySelectorAll('#vault-sort-options .sort-option-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+    }
+    renderVaultGridToDedicatedView();
+  });
+});
+
+let isVaultBulkMode = false;
+const selectedVaultPosts = new Set();
+
+const bulkEditBtn = document.getElementById('vault-bulk-edit-btn');
+const bulkActionsFooter = document.getElementById('vault-bulk-actions');
+const bulkCancelBtn = document.getElementById('bulk-cancel-btn');
+
+function toggleBulkMode() {
+  isVaultBulkMode = !isVaultBulkMode;
+  selectedVaultPosts.clear();
+
+  if (bulkEditBtn) {
+    bulkEditBtn.style.background = isVaultBulkMode ? 'rgba(239, 68, 68, 0.15)' : '';
+    bulkEditBtn.style.borderColor = isVaultBulkMode ? '#ef4444' : '';
+  }
+
+  if (bulkActionsFooter) {
+    bulkActionsFooter.style.display = isVaultBulkMode ? 'flex' : 'none';
+  }
+  
+  const mainTaskbar = document.getElementById('vault-main-taskbar');
+  if (mainTaskbar) {
+    mainTaskbar.style.display = isVaultBulkMode ? 'none' : 'flex';
+  }
+  
+  if (isVaultBulkMode) {
+      const folderSelect = document.getElementById('bulk-folder-select');
+      if (folderSelect) {
+        folderSelect.innerHTML = '';
+        getVaultFolders().forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f;
+          opt.textContent = f;
+          folderSelect.appendChild(opt);
+        });
+      }
+    }
+
+  const countEl = document.getElementById('bulk-selection-count');
+  if (countEl) countEl.textContent = `0 items selected`;
+
+  const vaultGrid = document.getElementById('vault-grid');
+  if (vaultGrid) {
+    if (isVaultBulkMode) {
+      vaultGrid.classList.add('bulk-mode-active');
+    } else {
+      vaultGrid.classList.remove('bulk-mode-active');
+      // Clear selection visually without re-rendering the whole grid
+      document.querySelectorAll('.card.bulk-selected').forEach(card => card.classList.remove('bulk-selected'));
+    }
+  }
+}
+
+function performFlipAnimation(updateFunc) {
+  const grid = document.getElementById('vault-grid');
+  if (!grid) {
+    updateFunc();
+    return;
+  }
+  
+  // 1. FIRST: Record current positions
+  const oldPositions = new Map();
+  Array.from(grid.querySelectorAll('.card')).forEach(card => {
+    oldPositions.set(card.id, card.getBoundingClientRect());
+  });
+
+  // 2. UPDATE DOM
+  updateFunc();
+
+  // 3. LAST, INVERT, PLAY
+  requestAnimationFrame(() => {
+    const newCards = Array.from(grid.querySelectorAll('.card'));
+    
+    // Invert
+    newCards.forEach(card => {
+      const oldRect = oldPositions.get(card.id);
+      if (oldRect) {
+        const newRect = card.getBoundingClientRect();
+        const deltaX = oldRect.left - newRect.left;
+        const deltaY = oldRect.top - newRect.top;
+        
+        // Only animate if position actually changed
+        if (deltaX !== 0 || deltaY !== 0) {
+          card.style.transition = 'none';
+          card.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+          card.dataset.flip = 'true';
+        }
+      }
+    });
+
+    // Force reflow
+    grid.offsetHeight; 
+
+    // Play
+    newCards.forEach(card => {
+      if (card.dataset.flip === 'true') {
+        card.style.transition = 'transform 0.4s cubic-bezier(0.25, 1, 0.5, 1)';
+        card.style.transform = 'translate(0, 0)';
+        delete card.dataset.flip;
+        
+        setTimeout(() => {
+          card.style.transition = '';
+          card.style.transform = '';
+        }, 400);
+      }
+    });
+  });
+}
+
+function animateItemsToFolder(targetFolder, updateFunc) {
+  const selectedCards = Array.from(document.querySelectorAll('.card.bulk-selected'));
+  if (selectedCards.length === 0) {
+    if (updateFunc) performFlipAnimation(updateFunc);
+    return;
+  }
+  
+  let targetBtn = Array.from(document.querySelectorAll('.pinterest-folder-title')).find(el => el.textContent === targetFolder);
+  if (targetBtn) targetBtn = targetBtn.closest('.vault-folder-btn');
+  
+  let targetRect = null;
+  if (targetBtn) {
+    targetRect = targetBtn.getBoundingClientRect();
+  } else {
+    targetRect = { left: window.innerWidth / 2, top: window.innerHeight / 2, width: 0, height: 0 };
+  }
+  
+  const clones = [];
+  selectedCards.forEach(card => {
+    const rect = card.getBoundingClientRect();
+    const clone = card.cloneNode(true);
+    clone.style.position = 'fixed';
+    clone.style.left = rect.left + 'px';
+    clone.style.top = rect.top + 'px';
+    clone.style.width = rect.width + 'px';
+    clone.style.height = rect.height + 'px';
+    clone.style.margin = '0';
+    clone.style.zIndex = '9999';
+    clone.style.transition = 'all 0.4s cubic-bezier(0.25, 1, 0.5, 1)';
+    clone.style.pointerEvents = 'none';
+    
+    document.body.appendChild(clone);
+    clones.push(clone);
+  });
+  
+  requestAnimationFrame(() => {
+    clones.forEach(clone => {
+      const centerX = targetRect.left + targetRect.width / 2;
+      const centerY = targetRect.top + targetRect.height / 2;
+      
+      const currentRect = clone.getBoundingClientRect();
+      const currentCenterX = currentRect.left + currentRect.width / 2;
+      const currentCenterY = currentRect.top + currentRect.height / 2;
+      
+      const translateX = centerX - currentCenterX;
+      const translateY = centerY - currentCenterY;
+      
+      clone.style.transform = `translate(${translateX}px, ${translateY}px) scale(0.1)`;
+      clone.style.opacity = '0';
+    });
+  });
+  
+  setTimeout(() => {
+    clones.forEach(c => c.remove());
+  }, 400);
+
+  if (updateFunc) performFlipAnimation(updateFunc);
+}
+
+function animateItemsOut(updateFunc) {
+  const selectedCards = Array.from(document.querySelectorAll('.card.bulk-selected'));
+  if (selectedCards.length === 0) {
+    if (updateFunc) performFlipAnimation(updateFunc);
+    return;
+  }
+  
+  const clones = [];
+  selectedCards.forEach(card => {
+    const rect = card.getBoundingClientRect();
+    const clone = card.cloneNode(true);
+    clone.style.position = 'fixed';
+    clone.style.left = rect.left + 'px';
+    clone.style.top = rect.top + 'px';
+    clone.style.width = rect.width + 'px';
+    clone.style.height = rect.height + 'px';
+    clone.style.margin = '0';
+    clone.style.zIndex = '9999';
+    clone.style.transition = 'all 0.3s ease';
+    clone.style.pointerEvents = 'none';
+    
+    document.body.appendChild(clone);
+    clones.push(clone);
+  });
+  
+  requestAnimationFrame(() => {
+    clones.forEach(clone => {
+      clone.style.transform = 'scale(0.8)';
+      clone.style.opacity = '0';
+    });
+  });
+  
+  setTimeout(() => {
+    clones.forEach(c => c.remove());
+  }, 300);
+
+  if (updateFunc) performFlipAnimation(updateFunc);
+}
+
+if (bulkEditBtn) bulkEditBtn.addEventListener('click', toggleBulkMode);
+if (bulkCancelBtn) bulkCancelBtn.addEventListener('click', toggleBulkMode);
+
+document.getElementById('bulk-move-btn')?.addEventListener('click', () => {
+  if (selectedVaultPosts.size === 0) return triggerToastNotification("No items selected.");
+  const folderSelect = document.getElementById('bulk-folder-select');
+  const targetFolder = folderSelect ? folderSelect.value : 'Default';
+
+  vaultedPosts.forEach(p => {
+    if (selectedVaultPosts.has(String(p.id))) {
+      p.folder = targetFolder;
+    }
+  });
+
+  localforage.setItem('r34_vault_v2', vaultedPosts);
+  triggerToastNotification(`Moved ${selectedVaultPosts.size} items to ${targetFolder}.`);
+  if (typeof animateItemsToFolder === 'function') {
+    animateItemsToFolder(targetFolder, () => {
+      document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+      toggleBulkMode();
+      if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+    });
+  } else {
+    document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+    toggleBulkMode();
+    if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+  }
+});
+
+document.getElementById('bulk-delete-btn')?.addEventListener('click', () => {
+  if (selectedVaultPosts.size === 0) return triggerToastNotification("No items selected.");
+  if (!confirm(`Are you sure you want to delete ${selectedVaultPosts.size} items from your vault?`)) return;
+
+  vaultedPosts = vaultedPosts.filter(p => !selectedVaultPosts.has(String(p.id)));
+  localforage.setItem('r34_vault_v2', vaultedPosts);
+
+  triggerToastNotification(`Deleted ${selectedVaultPosts.size} items.`);
+  syncVaultCounterDisplay();
+  
+  if (typeof animateItemsOut === 'function') {
+    animateItemsOut(() => {
+      document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+      toggleBulkMode();
+      if (typeof renderVaultFoldersNav === 'function') {
+        renderVaultFoldersNav();
+      }
+    });
+  } else {
+    document.querySelectorAll('.card.bulk-selected').forEach(card => card.remove());
+    toggleBulkMode();
+    if (typeof renderVaultFoldersNav === 'function') {
+      renderVaultFoldersNav();
+    }
+  }
+});
+
+document.getElementById('modal-delete-folder-btn')?.addEventListener('click', function() {
+  const folderToDelete = this.getAttribute('data-folder');
+  if (!folderToDelete || folderToDelete === 'Default') return;
+  
+  if (confirm(`Delete the folder "${folderToDelete}"? All items will be moved to Default.`)) {
+    vaultedPosts.forEach(p => {
+      if (p.folder === folderToDelete) p.folder = 'Default';
+    });
+    localforage.setItem('r34_vault_v2', vaultedPosts);
+
+    vaultedFolders = vaultedFolders.filter(f => f !== folderToDelete);
+    localforage.setItem('r34_folders_v2', vaultedFolders);
+    
+    if (vaultFolderSettings[folderToDelete]) {
+      delete vaultFolderSettings[folderToDelete];
+      localforage.setItem('r34_folder_settings_v1', vaultFolderSettings);
+    }
+
+    if (currentVaultFolder === folderToDelete) {
+      currentVaultFolder = 'Default';
+    }
+    
+    renderVaultFoldersNav();
+    renderVaultGridToDedicatedView();
+    closeNewFolderModal();
+  }
+});
+
+let preloadedPagesQueue = [];
+let isPreloading = false;
+let currentPreloadTags = '';
+let currentPreloadPage = 0;
+const PRELOAD_BUFFER_SIZE = 3;
+
+async function fetchStandardBatch(tagsParam, page, isBackground = false) {
+  const url = typeof window.buildBooruSearchUrl === 'function'
+    ? window.buildBooruSearchUrl({ tags: tagsParam, limit: PER_PAGE, page })
+    : `${API}&tags=${encodeURIComponent(tagsParam).replace(/%2B/g, '+')}&limit=${PER_PAGE}&pid=${page}&json=1`;
+  try {
+    const res = await throttledFetch(proxifyUrl(url), {}, isBackground);
+    const responseText = await res.text();
+    if (!res.ok || !responseText.trim()) return null;
+    const parsed = JSON.parse(responseText);
+    return typeof window.adaptPosts === 'function' ? window.adaptPosts(parsed) : parsed;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function startContinuousPreload(tagsParam, startPage) {
+  // If already preloading for this EXACT query ahead of the requested start page, let it keep running
+  if (isPreloading && currentPreloadTags === tagsParam && currentPreloadPage >= startPage) return;
+
+  isPreloading = true;
+  currentPreloadTags = tagsParam;
+  currentPreloadPage = startPage;
+
+  while (isPreloading && currentPreloadTags === tagsParam) {
+    if (preloadedPagesQueue.length < PRELOAD_BUFFER_SIZE && hasMore) {
+      const data = await fetchStandardBatch(tagsParam, currentPreloadPage, true);
+
+      // If the search was cancelled or changed while fetching, discard
+      if (!isPreloading || currentPreloadTags !== tagsParam) break;
+
+      if (data && data.length > 0) {
+        preloadedPagesQueue.push(data);
+        currentPreloadPage++;
+        if (data.length < PER_PAGE) {
+          hasMore = false;
+          break;
+        }
+      } else {
+        hasMore = false;
+        break;
+      }
+    } else if (!hasMore) {
+      break;
+    } else {
+      // Buffer is full, wait a bit before checking again
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+}
+
+async function search(tags, page, append = false) {
+  if (append && isLoading) return; // Prevent multiple simultaneous page loads
+  
+  if (!append) {
+    isLoading = false;
+    if (typeof window.clearBackgroundFetchQueue === 'function') {
+      window.clearBackgroundFetchQueue();
+    }
+  }
+
+  isLoading = true;
+  const myVersion = ++window.searchRequestVersion;
+
+
+  const bottomStatusEl = document.getElementById('bottom-status');
+
+  if (!append) {
+    grid.innerHTML = ''; // Clear grid only for new searches
+    grid.classList.add('is-filtering');
+    if (typeof window.renderGridSkeletons === 'function') window.renderGridSkeletons(grid, 12);
+    cachedPosts = []; // Clear cached posts for new searches
+    if (metaRow) metaRow.style.display = 'none';
+    statusEl.style.display = 'block';
+    if (bottomStatusEl) bottomStatusEl.style.display = 'none';
+    statusEl.innerHTML = '<div class="spinner"></div>Crunching requested parameters...';
+    hasMore = true; // Assume there's more for a new search
+
+    // STOP OLD PRELOAD LOOP AND CLEAR QUEUE
+    isPreloading = false;
+    preloadedPagesQueue = [];
+  } else {
+    if (bottomStatusEl) bottomStatusEl.style.display = 'block'; // Show spinner at bottom
+  }
+
+  const days = timeframeSelect.value;
+  const sortVal = sortSelect.value;
+  let tagParts = tags.trim() ? tags.trim().split(/\s+/) : [];
+  if (sortVal) tagParts.push(sortVal);
+
+  if (typeof globalBlacklist !== 'undefined' && globalBlacklist.length > 0) {
+    globalBlacklist.forEach(t => tagParts.push(`-${t}`));
+  }
+  if (typeof globalWhitelist !== 'undefined' && globalWhitelist.length > 0) {
+    globalWhitelist.forEach(t => tagParts.push(t));
+  }
+  if (days !== 'all') {
+    if (!append) statusEl.innerHTML = '<div class="spinner"></div>Calibrating target timeframe offsets...';
+    let range = await getIdRange(parseInt(days));
+    if (myVersion !== window.searchRequestVersion) {
+      isLoading = false;
+
+      return;
+    }
+    if (range) { tagParts.push(`id:>=${range.min}`); tagParts.push(`id:<=${range.max}`); }
+  }
+  const tagsParam = tagParts.join('+') || 'all';
+
+  let data = null;
+
+  try {
+    if (append && preloadedPagesQueue.length > 0) {
+      // PROMISE BUFFER ARCHITECTURE: Instantly resolve from the memory queue!
+      data = preloadedPagesQueue.shift();
+    } else {
+      // Fallback or Initial fetch (if we scrolled faster than the buffer, or it's a new search)
+      data = await fetchStandardBatch(tagsParam, page, false);
+    }
+  } catch (err) {
+    data = null;
+  }
+
+  if (myVersion !== window.searchRequestVersion) {
+    isLoading = false;
+
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    if (!append && typeof window.clearGridSkeletons === 'function') window.clearGridSkeletons(grid);
+    if (!append) statusEl.innerHTML = cachedPosts.length === 0 ? '<span class="icon">ðŸ˜¶</span>No matching vectors found.' : '';
+    if (bottomStatusEl) bottomStatusEl.style.display = 'none';
+    hasMore = false; // No more data to load
+  } else {
+    cacheSuccessfulSearch(tags);
+    cachedPosts = append ? cachedPosts.concat(data) : data; // Append or replace cached posts
+    statusEl.style.display = 'none';
+    if (bottomStatusEl) bottomStatusEl.style.display = 'none';
+    if (metaRow) metaRow.style.display = 'flex';
+    if (resultCount) resultCount.textContent = `${cachedPosts.length} items loaded dynamically`; // Update total count
+    hasMore = data.length === PER_PAGE; // If less than PER_PAGE, assume no more pages
+
+    renderFilterBadges(days, sortVal);
+    injectPostCardsIntoGrid(data);
+
+    // KICK OFF OR RESUME BACKGROUND PRELOAD FOR THE NEXT PAGES
+    if (hasMore) {
+      startContinuousPreload(tagsParam, page + 1);
+    }
+  }
+
+
+  isLoading = false;
+  grid.classList.remove('is-filtering');
+
+  setTimeout(() => {
+    if (typeof window.checkSentinelVisibility === 'function') {
+      window.checkSentinelVisibility();
+    }
+  }, 300);
+}
+
+function syncVaultCounterDisplay() {
+  const navVault = document.getElementById('nav-vault');
+  if (navVault) {
+    const totalCount = vaultedPosts.length + (typeof vaultedManga !== 'undefined' ? vaultedManga.length : 0);
+    navVault.title = `Vault (${totalCount})`;
+  }
+}
+
+function disableVaultViewMode() {
+  isViewingVault = false;
+}
+
+function togglePostFavoriteStatus(post) {
+  const idx = vaultedPosts.findIndex(p => String(p.id) === String(post.id));
+  if (idx > -1) {
+    vaultedPosts.splice(idx, 1); lbFavBtn.classList.remove('favorited'); lbFavBtn.textContent = 'ðŸ¤ Favorite';
+  } else {
+    vaultedPosts.unshift(post); lbFavBtn.classList.add('favorited'); lbFavBtn.textContent = 'â¤ï¸ Favorited';
+  }
+  localforage.setItem('r34_vault_v2', vaultedPosts);
+  syncVaultCounterDisplay();
+  if (typeof renderHomeFolderTabs === 'function') {
+    renderHomeFolderTabs();
+  }
+
+  // Re-render the vault grid if we are currently looking at it
+  const viewVault = document.getElementById('view-vault');
+  if (viewVault && viewVault.style.display !== 'none' && typeof renderVaultGridToDedicatedView === 'function') {
+    renderVaultGridToDedicatedView();
+  }
+}
+
+window.checkSentinelVisibility = function() {
+  if (isViewingVault) return;
+  
+  const isAlgo = (sortSelect && sortSelect.value === 'algo:discover');
+  const isAlgoLoadingSafe = (typeof isAlgoLoading !== 'undefined') ? isAlgoLoading : false;
+  const loading = isAlgo ? isAlgoLoadingSafe : isLoading;
+  if (loading || !hasMore) return;
+
+  if (scrollSentinel) {
+    const rect = scrollSentinel.getBoundingClientRect();
+    if (rect.top < window.innerHeight + 150) {
+      if (typeof loadNextPage === 'function') {
+        loadNextPage();
+      }
+    }
+  }
+};
+
+function loadNextPage() {
+  currentPage++;
+  if (sortSelect && sortSelect.value === 'algo:discover') {
+    if (typeof pullBlendedBatch === 'function') {
+      pullBlendedBatch(true, true);
+      return;
+    }
+  }
+  search(currentTags, currentPage, true); // Pass true for append
+}
+
+function doSearch() {
+  if (input.value.trim() !== '') addPill(input.value);
+  disableVaultViewMode();
+  scrollSentinel.style.display = 'flex'; // Ensure sentinel is visible for new searches
+  currentTags = tagsArray.join(' ');
+  currentPage = 0; // Reset page for a new search
+
+  if (currentTags.trim() !== '') {
+    window.algoTargetFolder = null;
+    if (typeof renderHomeFolderTabs === 'function') renderHomeFolderTabs();
+  }
+
+  // Toggle sorting & timeframe capsules visibility based on whether tags/search is active
+  const sortContainer = document.getElementById('search-sort-container');
+  const timeframeContainer = document.getElementById('search-timeframe-container');
+  if (currentTags.trim() === '') {
+    if (sortContainer) sortContainer.style.display = 'none';
+    if (timeframeContainer) timeframeContainer.style.display = 'none';
+  } else {
+    if (sortContainer) sortContainer.style.display = 'flex';
+    if (timeframeContainer) timeframeContainer.style.display = 'flex';
+  }
+
+  // Auto-switch away from algorithm if user is making a specific custom search
+  if (sortSelect && sortSelect.value === 'algo:discover' && currentTags !== '') {
+    sortSelect.value = ''; // switch to default order
+    if (typeof updateSortButtonsUI === 'function') {
+      updateSortButtonsUI('');
+    }
+  }
+
+  if (sortSelect && sortSelect.value === 'algo:discover') {
+    if (typeof pullBlendedBatch === 'function') {
+      pullBlendedBatch(false, true);
+      return;
+    }
+  }
+
+  search(currentTags, currentPage, false); // Start a new search, not appending
+}
+
+// Reset to algorithm feed (triggered when clicking the Images tab again or on load)
+function resetToAlgorithmFeed() {
+  tagsArray = [];
+  if (typeof renderPills === 'function') {
+    renderPills();
+  }
+  if (input) {
+    input.value = '';
+  }
+  currentTags = '';
+
+  window.algoTargetFolder = null;
+  if (typeof renderHomeFolderTabs === 'function') {
+    renderHomeFolderTabs();
+  }
+
+  if (sortSelect) {
+    sortSelect.value = 'algo:discover';
+  }
+  if (typeof updateSortButtonsUI === 'function') {
+    updateSortButtonsUI('algo:discover');
+  }
+
+  if (timeframeSelect) {
+    timeframeSelect.value = 'all';
+  }
+  if (typeof updateTimeframeUI === 'function') {
+    updateTimeframeUI('all');
+  }
+
+  const sortContainer = document.getElementById('search-sort-container');
+  if (sortContainer) {
+    sortContainer.style.display = 'none';
+  }
+
+  const timeframeContainer = document.getElementById('search-timeframe-container');
+  if (timeframeContainer) {
+    timeframeContainer.style.display = 'none';
+  }
+
+  doSearch();
+}
+
+// The nav-images listener has been moved to navigation.js to allow contextual refreshing
+
+
+
+// Search Sort Capsule Logic
+const sortBtnScore = document.getElementById('sort-btn-score');
+const sortBtnTime = document.getElementById('sort-btn-time');
+const sortBtnRandom = document.getElementById('sort-btn-random');
+const sortToggleBtn = document.getElementById('sort-toggle-btn');
+const sortContainer = document.getElementById('search-sort-container');
+
+// Define custom image paths for sorting options
+const SORT_ICONS = {
+  'algo:discover': 'Icons/icons8-dice-32.png',
+  'sort:score:desc': 'Icons/icons8-star-48.png',
+  'sort:score:asc': 'Icons/icons8-star-48.png',
+  'sort:id:desc': 'Icons/icons8-clock-30.png',
+  'sort:id:asc': 'Icons/icons8-clock-30.png',
+  'sort:random': 'Icons/icons8-dice-32.png'
+};
+
+function updateSortButtonsUI(value) {
+  if (!sortBtnScore || !sortBtnTime || !sortBtnRandom || !sortToggleBtn) return;
+
+  if (value !== 'algo:discover') {
+    window.algoTargetFolder = null;
+    if (typeof renderHomeFolderTabs === 'function') {
+      renderHomeFolderTabs();
+    }
+  }
+
+  // Remove active and reversed classes from all buttons and their child images
+  [sortBtnScore, sortBtnTime, sortBtnRandom].forEach(btn => {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+    const img = btn.querySelector('img');
+    if (img) img.classList.remove('reversed');
+  });
+
+  const toggleImg = sortToggleBtn.querySelector('img');
+  if (toggleImg) toggleImg.classList.remove('reversed');
+
+  let activeIconKey = 'sort:id:desc'; // Default fallback
+
+  if (value === 'algo:discover') {
+    activeIconKey = 'algo:discover';
+  } else if (value.startsWith('sort:score:')) {
+    sortBtnScore.classList.add('active');
+    activeIconKey = value;
+    const img = sortBtnScore.querySelector('img');
+    const isReversed = (value === 'sort:score:asc');
+    if (img) {
+      img.src = SORT_ICONS[value] || SORT_ICONS['sort:score:desc'];
+      if (isReversed) img.classList.add('reversed');
+    }
+  } else if (value.startsWith('sort:id:') || value === '') {
+    sortBtnTime.classList.add('active');
+    const valKey = value || 'sort:id:desc';
+    activeIconKey = valKey;
+    const img = sortBtnTime.querySelector('img');
+    const isReversed = (valKey === 'sort:id:asc');
+    if (img) {
+      img.src = SORT_ICONS[valKey] || SORT_ICONS['sort:id:desc'];
+      if (isReversed) img.classList.add('reversed');
+    }
+  } else if (value === 'sort:random') {
+    sortBtnRandom.classList.add('active');
+    activeIconKey = 'sort:random';
+  }
+
+  // Update the toggle button icon
+  if (toggleImg) {
+    toggleImg.src = SORT_ICONS[activeIconKey] || SORT_ICONS['sort:id:desc'];
+    // If the active sort is reversed, flip the toggle button's icon too
+    if (activeIconKey === 'sort:score:asc' || activeIconKey === 'sort:id:asc') {
+      toggleImg.classList.add('reversed');
+    }
+  }
+
+  // Update titles
+  if (value === 'sort:score:desc') {
+    sortBtnScore.title = 'Sort by Score (Highest First)';
+  } else if (value === 'sort:score:asc') {
+    sortBtnScore.title = 'Sort by Score (Lowest First)';
+  }
+
+  if (value === 'sort:id:desc') {
+    sortBtnTime.title = 'Sort by Time (Newest First)';
+  } else if (value === 'sort:id:asc') {
+    sortBtnTime.title = 'Sort by Time (Oldest First)';
+  }
+
+  if (sortSelect) {
+    sortSelect.value = value;
+  }
+
+  [sortBtnScore, sortBtnTime, sortBtnRandom].forEach(btn => {
+    btn.setAttribute('aria-pressed', String(btn.classList.contains('active')));
+  });
+}
+
+if (sortToggleBtn && sortContainer) {
+  sortToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sortContainer.classList.toggle('expanded');
+    sortToggleBtn.setAttribute('aria-expanded', String(sortContainer.classList.contains('expanded')));
+    // Collapse timeframe capsule when sort is opened
+    const timeframeContainer = document.getElementById('search-timeframe-container');
+    if (timeframeContainer) timeframeContainer.classList.remove('expanded');
+    if (timeframeToggleBtn) timeframeToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+if (sortBtnScore) {
+  sortBtnScore.addEventListener('click', (e) => {
+    e.stopPropagation();
+    let currentVal = sortSelect ? sortSelect.value : 'sort:score:desc';
+    let newVal = 'sort:score:desc';
+    if (currentVal === 'sort:score:desc') {
+      newVal = 'sort:score:asc';
+    }
+    updateSortButtonsUI(newVal);
+    doSearch();
+  });
+}
+
+if (sortBtnTime) {
+  sortBtnTime.addEventListener('click', (e) => {
+    e.stopPropagation();
+    let currentVal = sortSelect ? sortSelect.value : 'sort:id:desc';
+    let newVal = 'sort:id:desc';
+    if (currentVal === 'sort:id:desc') {
+      newVal = 'sort:id:asc';
+    }
+    updateSortButtonsUI(newVal);
+    doSearch();
+  });
+}
+
+if (sortBtnRandom) {
+  sortBtnRandom.addEventListener('click', (e) => {
+    e.stopPropagation();
+    updateSortButtonsUI('sort:random');
+    doSearch();
+  });
+}
+
+// Search Timeframe Capsule Logic
+const timeframeToggleBtn = document.getElementById('timeframe-toggle-btn');
+const timeframeContainer = document.getElementById('search-timeframe-container');
+const timeframeOptions = document.querySelectorAll('.timeframe-option-btn');
+
+function updateTimeframeUI(value) {
+  if (!timeframeContainer || !timeframeToggleBtn || !timeframeSelect) return;
+
+  // Remove active classes from options
+  timeframeOptions.forEach(btn => btn.classList.remove('active'));
+
+  // Find the button with this value and activate it
+  const targetBtn = Array.from(timeframeOptions).find(btn => btn.dataset.value === value);
+  if (targetBtn) {
+    targetBtn.classList.add('active');
+  }
+  timeframeOptions.forEach(btn => btn.setAttribute('aria-pressed', String(btn.classList.contains('active'))));
+
+  // Update backend select dropdown value
+  timeframeSelect.value = value;
+}
+
+if (timeframeToggleBtn && timeframeContainer) {
+  timeframeToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    timeframeContainer.classList.toggle('expanded');
+    timeframeToggleBtn.setAttribute('aria-expanded', String(timeframeContainer.classList.contains('expanded')));
+    // Collapse sort capsule when timeframe is opened
+    if (sortContainer) sortContainer.classList.remove('expanded');
+    if (sortToggleBtn) sortToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+}
+
+timeframeOptions.forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const val = btn.dataset.value;
+    updateTimeframeUI(val);
+    timeframeContainer.classList.remove('expanded');
+    doSearch();
+  });
+});
+
+// Close sorting and timeframe capsules on click outside
+document.addEventListener('click', (e) => {
+  if (sortContainer && !sortContainer.contains(e.target)) {
+    sortContainer.classList.remove('expanded');
+    if (sortToggleBtn) sortToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (timeframeContainer && !timeframeContainer.contains(e.target)) {
+    timeframeContainer.classList.remove('expanded');
+    if (timeframeToggleBtn) timeframeToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+});
+
+
+
+document.querySelectorAll('[data-insert]').forEach(chip => {
+  chip.addEventListener('click', () => addPill(chip.dataset.insert));
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await initVault(); // Wait for IndexedDB migration and load
+  getLatestId();
+  renderHistoryAndPins();
+  syncVaultCounterDisplay();
+  if (typeof renderVaultFoldersNav === 'function') renderVaultFoldersNav();
+  if (typeof initAlgoCache === 'function') await initAlgoCache(); // Preload algorithm cache
+  if (sortSelect) {
+    updateSortButtonsUI(sortSelect.value);
+  }
+  doSearch(); // Automatically generate the feed on startup
+});
+
+const vaultExportBtn = document.getElementById('vault-export-btn');
+const vaultImportBtn = document.getElementById('vault-import-btn');
+const vaultImportInput = document.getElementById('vault-import-input');
+
+if (vaultExportBtn) vaultExportBtn.addEventListener('click', exportVault);
+if (vaultImportBtn) vaultImportBtn.addEventListener('click', () => vaultImportInput.click());
+if (vaultImportInput) vaultImportInput.addEventListener('change', (e) => {
+  if (e.target.files.length > 0) importVault(e.target.files[0]);
+});
+
+// Global Settings Modal Logic
+const globalSettingsModal = document.getElementById('global-settings-modal');
+const vaultSettingsBtn = document.getElementById('vault-settings-btn');
+const globalSettingsClose = document.getElementById('global-settings-close');
+
+if (vaultSettingsBtn) {
+  vaultSettingsBtn.addEventListener('click', () => {
+    renderBlacklist();
+    renderWhitelist();
+    globalSettingsModal.style.display = 'flex';
+  });
+}
+
+if (globalSettingsClose) {
+  globalSettingsClose.addEventListener('click', () => {
+    globalSettingsModal.style.display = 'none';
+  });
+}
+
+function renderWhitelist() {
+  const container = document.getElementById('whitelist-tags');
+  if (!container) return;
+  container.innerHTML = '';
+  globalWhitelist.forEach(tag => {
+    const pill = document.createElement('span');
+    pill.className = 'meta-badge';
+    pill.style.background = 'rgba(16,185,129,0.15)';
+    pill.style.color = '#10b981';
+    pill.style.borderColor = '#059669';
+    pill.style.cursor = 'pointer';
+    pill.textContent = tag + ' âœ•';
+    pill.onclick = async () => {
+      globalWhitelist = globalWhitelist.filter(t => t !== tag);
+      await localforage.setItem('r34_whitelist', globalWhitelist);
+      renderWhitelist();
+    };
+    container.appendChild(pill);
+  });
+}
+
+function renderBlacklist() {
+  const container = document.getElementById('blacklist-tags');
+  if (!container) return;
+  container.innerHTML = '';
+  globalBlacklist.forEach(tag => {
+    const pill = document.createElement('span');
+    pill.className = 'meta-badge';
+    pill.style.background = 'rgba(244,63,94,0.15)';
+    pill.style.color = '#fb7185';
+    pill.style.borderColor = '#f43f5e';
+    pill.style.cursor = 'pointer';
+    pill.textContent = tag + ' âœ•';
+    pill.onclick = async () => {
+      globalBlacklist = globalBlacklist.filter(t => t !== tag);
+      await localforage.setItem('r34_blacklist', globalBlacklist);
+      renderBlacklist();
+    };
+    container.appendChild(pill);
+  });
+}
+
+function renderSettingsAutocomplete(items, targetBox, inputElement, listType) {
+  targetBox.innerHTML = '';
+  if (!items || items.length === 0) {
+    targetBox.style.display = 'none';
+    return;
+  }
+  items.slice(0, 8).forEach((item) => {
+    const value = item.value || item.name || item;
+    const row = document.createElement('div');
+    row.style.padding = '10px 12px';
+    row.style.cursor = 'pointer';
+    row.style.borderBottom = '1px solid var(--border)';
+    row.style.color = 'var(--text)';
+    row.style.transition = 'background 0.2s';
+    row.textContent = value;
+    row.onmouseover = () => row.style.background = 'var(--surface)';
+    row.onmouseout = () => row.style.background = 'transparent';
+    row.onclick = async () => {
+      targetBox.style.display = 'none';
+      inputElement.value = ''; // clear input immediately
+
+      if (listType === 'whitelist') {
+        if (!globalWhitelist.includes(value)) {
+          globalWhitelist.push(value);
+          await localforage.setItem('r34_whitelist', globalWhitelist);
+          renderWhitelist();
+        }
+      } else if (listType === 'blacklist') {
+        if (!globalBlacklist.includes(value)) {
+          globalBlacklist.push(value);
+          await localforage.setItem('r34_blacklist', globalBlacklist);
+          renderBlacklist();
+        }
+      }
+    };
+    targetBox.appendChild(row);
+  });
+  targetBox.style.display = 'block';
+}
+
+function setupSettingsAutocomplete(inputId, boxId, listType) {
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(boxId);
+  if (!input || !box) return;
+  let timeout;
+
+  input.addEventListener('input', (e) => {
+    clearTimeout(timeout);
+    let text = e.target.value.trim();
+    if (text.startsWith('-')) text = text.slice(1);
+    if (text.length < 2) {
+      box.style.display = 'none';
+      return;
+    }
+    timeout = setTimeout(() => {
+      if (typeof queryAutocomplete === 'function') {
+        queryAutocomplete(text, (data) => renderSettingsAutocomplete(data, box, input, listType));
+      }
+    }, 250);
+  });
+
+  // Hide on click outside
+  document.addEventListener('click', (e) => {
+    if (e.target !== input && e.target !== box && !box.contains(e.target)) {
+      box.style.display = 'none';
+    }
+  });
+}
+
+setupSettingsAutocomplete('whitelist-input', 'whitelist-autocomplete-box', 'whitelist');
+setupSettingsAutocomplete('blacklist-input', 'blacklist-autocomplete-box', 'blacklist');
+
+class Slideshow {
+  constructor() {
+    this.timer = null;
+    this.interval = 4000;
+    this.isPlaying = false;
+    this.btn = document.getElementById('slideshow-btn');
+    if (this.btn) {
+      this.btn.addEventListener('click', () => this.toggle());
+    }
+
+    // Pause if user interacts with lightbox
+    const stopInteract = () => { if (this.isPlaying) this.stop(); };
+    if (typeof lbPrevBtn !== 'undefined') lbPrevBtn.addEventListener('click', stopInteract);
+    if (typeof lbNextBtn !== 'undefined') lbNextBtn.addEventListener('click', stopInteract);
+    if (typeof lbClose !== 'undefined') lbClose.addEventListener('click', stopInteract);
+  }
+
+  toggle() {
+    if (this.isPlaying) {
+      this.stop();
+    } else {
+      this.start();
+    }
+  }
+
+  start() {
+    const posts = typeof getLightboxPosts === 'function' ? getLightboxPosts() : cachedPosts;
+    if (posts.length === 0) {
+      triggerToastNotification("No images to play!");
+      return;
+    }
+    this.isPlaying = true;
+    if (this.btn) {
+      this.btn.innerHTML = 'â¸ Stop';
+      this.btn.style.background = '#f43f5e';
+    }
+    triggerToastNotification("Slideshow started");
+
+    if (!lightbox.classList.contains('open')) {
+      openLightbox(0);
+    }
+
+    this.timer = setInterval(() => {
+      if (!lightbox.classList.contains('open')) {
+        this.stop();
+        return;
+      }
+      const posts = typeof getLightboxPosts === 'function' ? getLightboxPosts() : cachedPosts;
+      if (currentPostIndex < posts.length - 1) {
+        lbNextBtn.click();
+      } else {
+        if (hasMore) {
+          loadNextPage();
+          // wait a bit for it to load, then next
+          setTimeout(() => {
+            const updatedPosts = typeof getLightboxPosts === 'function' ? getLightboxPosts() : cachedPosts;
+            if (currentPostIndex < updatedPosts.length - 1) lbNextBtn.click();
+          }, 1500);
+        } else {
+          this.stop();
+          triggerToastNotification("Slideshow finished");
+        }
+      }
+    }, this.interval);
+  }
+
+  stop() {
+    this.isPlaying = false;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    if (this.btn) {
+      this.btn.innerHTML = 'â–¶ Play';
+      this.btn.style.background = 'var(--accent-purple)';
+    }
+  }
+}
+
+const slideshow = new Slideshow();
+
+// Handle Vault Main Taskbar Visibility
+const vaultView = document.getElementById('view-vault');
+const mainTaskbar = document.getElementById('vault-main-taskbar');
+if (vaultView && mainTaskbar) {
+  new MutationObserver(() => {
+    if (vaultView.style.display !== 'none' && !isVaultBulkMode) {
+      mainTaskbar.style.display = 'flex';
+    } else {
+      mainTaskbar.style.display = 'none';
+    }
+  }).observe(vaultView, { attributes: true, attributeFilter: ['style'] });
+}
