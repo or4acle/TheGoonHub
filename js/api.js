@@ -87,9 +87,15 @@ let idCalibrated = false;
 let highPriorityQueue = [];
 let lowPriorityQueue = [];
 let isFetchingQueue = false;
-let currentFetchDelay = 500; // Safer 2 requests per second baseline
+let currentFetchDelay = 700; // ~1.4 requests per second baseline
 let queueTimeoutId = null;
 let isCoolingDown = false;
+
+// Rule34 & friends reply 429 WITHOUT the CORS allow-origin header, so the
+// browser turns their rate-limit responses into opaque TypeErrors. We can't
+// see the status, but a failing network request during a feed burst is almost
+// always the API throttling us -> treat it like a 429 and back off.
+const NETWORK_ERROR_MAX_ATTEMPTS = 3;
 
 function processFetchQueue() {
   if (highPriorityQueue.length === 0 && lowPriorityQueue.length === 0) {
@@ -100,6 +106,14 @@ function processFetchQueue() {
 
   const isHighPriority = highPriorityQueue.length > 0;
   const req = isHighPriority ? highPriorityQueue.shift() : lowPriorityQueue.shift();
+
+  // Schedule the next pull exactly once, and letting a backoff path override
+  // the normal pacing. Never schedule from two places (that silently cancels
+  // the 3s backoff and keeps hammering the API).
+  const scheduleNext = (delay) => {
+    clearTimeout(queueTimeoutId);
+    queueTimeoutId = setTimeout(processFetchQueue, delay);
+  };
 
   // Launch fetch without blocking the queue
   fetch(req.url, req.options)
@@ -120,8 +134,7 @@ function processFetchQueue() {
         if (isHighPriority) highPriorityQueue.unshift(req);
         else lowPriorityQueue.unshift(req);
 
-        clearTimeout(queueTimeoutId);
-        queueTimeoutId = setTimeout(processFetchQueue, 3000); // 3 second backoff
+        scheduleNext(3000); // 3 second backoff
         return;
       }
       
@@ -141,12 +154,29 @@ function processFetchQueue() {
       }
 
       req.resolve(res);
+      scheduleNext(currentFetchDelay);
     })
-    .catch(err => req.reject(err));
-
-  // Schedule the next pull from the queue (unless a 429 overrides it)
-  clearTimeout(queueTimeoutId);
-  queueTimeoutId = setTimeout(processFetchQueue, currentFetchDelay);
+    .catch(err => {
+      // Network/CORS failure: almost always a rate-limited response (429) that
+      // the browser blocked because the API omits the CORS header on errors.
+      req.attempts = (req.attempts || 0) + 1;
+      if (req.attempts <= NETWORK_ERROR_MAX_ATTEMPTS) {
+        // Retry with a cooldown so we don't sit in an infinite error loop.
+        if (!isCoolingDown) {
+          isCoolingDown = true;
+          if (typeof triggerToastNotification === 'function') {
+            triggerToastNotification("Connection throttled, backing off...");
+          }
+          setTimeout(() => { isCoolingDown = false; }, 4000);
+        }
+        if (isHighPriority) highPriorityQueue.unshift(req);
+        else lowPriorityQueue.unshift(req);
+        scheduleNext(3000);
+        return;
+      }
+      req.reject(err);
+      scheduleNext(currentFetchDelay); // request gave up; keep the queue moving
+    });
 }
 
 function throttledFetch(url, options = {}, isBackground = false, useCache = true) {

@@ -283,8 +283,8 @@ function analyzeVaultTags(folderName = null) {
 let tagTypeWarnCount = 0;
 const TAG_TYPE_MAX_WARNS = 10; // Cap how many warning lines we print per session
 let tagTypeCoolDownUntil = 0; // Set on 429 so the pool backs off briefly
-const TAG_TYPE_BATCH_SIZE = 2;
-const TAG_TYPE_BATCH_GAP_MS = 450;
+const TAG_TYPE_BATCH_SIZE = 1;
+const TAG_TYPE_BATCH_GAP_MS = 800;
 
 function setTagTypeCoolDown(ms) {
     if (Date.now() + ms > tagTypeCoolDownUntil) {
@@ -308,7 +308,7 @@ async function fetchTagType(tag, retryCount = 0) {
         if (res.status === 429) {
             // Back the whole pool off so we stop hammering a rate-limited API.
             setTagTypeCoolDown(4000 + retryCount * 1500);
-            if (retryCount < 3) {
+            if (retryCount < 2) {
                 await new Promise(r => setTimeout(r, 750 * (retryCount + 1)));
                 return fetchTagType(tag, retryCount + 1);
             } else {
@@ -340,6 +340,10 @@ async function fetchTagType(tag, retryCount = 0) {
             }
         }
     } catch (e) {
+        // Rate-limited responses (429) arrive here from the browser as opaque
+        // TypeErrors because the API omits the CORS header on error responses.
+        // Back off the pool regardless so we stop tripping it.
+        setTagTypeCoolDown(3000);
         if (tagTypeWarnCount < TAG_TYPE_MAX_WARNS) {
             tagTypeWarnCount++;
             console.warn('Failed to fetch type for tag:', tag, e);
@@ -486,9 +490,10 @@ async function renderAlgoTable() {
     
     logAlgo(`Found ${sortedTags.length} unique tags in vault.`);
     
-    // Resolve top tags to populate the table properly without overwhelming the API
-    await resolveTopTagTypes(sortedTags, 150, 150);
-    logAlgo(`Resolved categories for top 150 tags.`);
+    // Resolve a small blocking subset so the table appears quickly; the rest
+    // finishes in the background at a rate-limit-safe pace.
+    await resolveTopTagTypes(sortedTags, 150, 30);
+    logAlgo(`Resolved categories for the top subject tags.`);
     
     const multipliers = {
         'character': parseFloat(algoValChar.value || 2.0),
@@ -721,7 +726,17 @@ async function startContinuousAlgoPreload(startPage) {
     while(isAlgoPreloading) {
         if (algoPreloadQueue.length < ALGO_PRELOAD_BUFFER_SIZE) {
             const queries = await getAlgoBatchQueries(currentAlgoPreloadPage, true);
-            const resultsArrays = await Promise.all(queries.map(q => q()));
+            // Run the page's queries in small serial waves instead of one big
+            // Promise.all: the background queue is rate-limited (~1.4 req/s),
+            // so a giant burst of parallel fetches would just pile up and trip
+            // the API's 429 (which browsers surface as opaque CORS errors).
+            const resultsArrays = [];
+            const WAVE = 3;
+            for (let i = 0; i < queries.length; i += WAVE) {
+                if (!isAlgoPreloading) break;
+                const waveResults = await Promise.all(queries.slice(i, i + WAVE).map(q => q()));
+                resultsArrays.push(...waveResults);
+            }
             const data = resultsArrays.flat().filter(p => p !== null && p !== undefined);
             
             if (!isAlgoPreloading) break;
@@ -835,60 +850,69 @@ async function pullBlendedBatch(append = false, isMainGrid = false) {
         }
 
         const renderedIds = new Set(cachedPosts.map(p => p.id));
-        let activeRequests = queries.length;
+        const FINAL_WAVE_SIZE = 3;
         let hasRenderedFirst = false;
 
-        // Run each fetch query progressively and append as they arrive!
-        queries.forEach(async (queryFn) => {
-            try {
-                const posts = await queryFn();
-                if (myVersion !== window.algoRequestVersion) return;
-
-                if (posts && posts.length > 0) {
-                    const vaultedIds = new Set(typeof vaultedPosts !== 'undefined' ? vaultedPosts.map(vp => vp.id) : []);
-                    const uniquePosts = posts.filter(post => {
-                        if (post && post.id && !renderedIds.has(post.id) && !vaultedIds.has(post.id)) {
-                            renderedIds.add(post.id);
-                            return true;
+        // Execute the page's queries in a few serial waves (3 at a time). The
+        // underlying queue is rate-limited (~1.4 req/s), so firing every custom
+        // query at once piles up low-priority work and trips 429 responses
+        // (which the browser hides behind an opaque CORS error).
+        const runWave = async (queryFns) => {
+            const results = await Promise.all(queryFns.map(async (queryFn) => {
+                try {
+                    const posts = await queryFn();
+                    if (myVersion !== window.algoRequestVersion) return [];
+                    if (posts && posts.length > 0) {
+                        const vaultedIds = new Set(typeof vaultedPosts !== 'undefined' ? vaultedPosts.map(vp => vp.id) : []);
+                        const uniquePosts = posts.filter(post => {
+                            if (post && post.id && !renderedIds.has(post.id) && !vaultedIds.has(post.id)) {
+                                renderedIds.add(post.id);
+                                return true;
+                            }
+                            return false;
+                        });
+                        if (uniquePosts.length > 0) {
+                            if (!hasRenderedFirst && !append) {
+                                targetStatus.style.display = 'none';
+                                hasRenderedFirst = true;
+                            }
+                            cachedPosts = cachedPosts.concat(uniquePosts);
+                            if (typeof injectPostCardsIntoGrid === 'function') {
+                                injectPostCardsIntoGrid(uniquePosts, targetGrid);
+                            }
                         }
-                        return false;
-                    });
-
-                    if (uniquePosts.length > 0) {
-                        if (!hasRenderedFirst && !append) {
-                            targetStatus.style.display = 'none';
-                            hasRenderedFirst = true;
-                        }
-
-                        cachedPosts = cachedPosts.concat(uniquePosts);
-                        if (typeof injectPostCardsIntoGrid === 'function') {
-                            injectPostCardsIntoGrid(uniquePosts, targetGrid);
-                        }
+                        return uniquePosts;
                     }
+                } catch (err) {
+                    console.error("Query execution failed", err);
                 }
-            } catch (err) {
-                console.error("Query execution failed", err);
-            } finally {
-                activeRequests--;
-                // When the final concurrent request resolves, clean up loading states
-                if (activeRequests === 0) {
-                    isAlgoLoading = false;
-                    if (bottomStatusEl) bottomStatusEl.style.display = 'none';
-                    if (!hasRenderedFirst && !append && cachedPosts.length === 0) {
-                        if (typeof window.clearGridSkeletons === 'function') window.clearGridSkeletons(targetGrid);
-                        targetStatus.style.display = 'block';
-                        targetStatus.innerHTML = 'No results found. Try clearing your Base Search or lowering weights.';
-                    }
-                    targetGrid.classList.remove('is-filtering');
-                    startContinuousAlgoPreload(algoGridPage + 1);
-                    setTimeout(() => {
-                        if (typeof window.checkSentinelVisibility === 'function') {
-                            window.checkSentinelVisibility();
-                        }
-                    }, 300);
-                }
+                return [];
+            }));
+            return results;
+        };
+
+        for (let waveStart = 0; waveStart < queries.length; waveStart += FINAL_WAVE_SIZE) {
+            if (myVersion !== window.algoRequestVersion) return;
+            await runWave(queries.slice(waveStart, waveStart + FINAL_WAVE_SIZE));
+            // Give the rate limiter a moment between waves.
+            await new Promise(r => setTimeout(r, 1200));
+        }
+
+        // All waves done: clean up loading states.
+        isAlgoLoading = false;
+        if (bottomStatusEl) bottomStatusEl.style.display = 'none';
+        if (!hasRenderedFirst && !append && cachedPosts.length === 0) {
+            if (typeof window.clearGridSkeletons === 'function') window.clearGridSkeletons(targetGrid);
+            targetStatus.style.display = 'block';
+            targetStatus.innerHTML = 'No results found. Try clearing your Base Search or lowering weights.';
+        }
+        targetGrid.classList.remove('is-filtering');
+        startContinuousAlgoPreload(algoGridPage + 1);
+        setTimeout(() => {
+            if (typeof window.checkSentinelVisibility === 'function') {
+                window.checkSentinelVisibility();
             }
-        });
+        }, 300);
 
     } catch (err) {
         console.error("Error inside pullBlendedBatch:", err);

@@ -49,13 +49,12 @@ let hasMoreMangaGrid = true;
 let cachedMangaPosts = [];
 
 const MD_API_BASE = 'https://api.mangadex.org';
-const MD_CLIENT_ID = 'personal-client-512490bf-72f9-49c3-9793-5f361e909453-75974a36';
 
-const mdFetchOptions = {
-  headers: {
-    'Client-Id': MD_CLIENT_ID
-  }
-};
+// NOTE: No custom headers here. A custom header (e.g. Client-Id) forces the
+// browser to send a CORS preflight OPTIONS request, and MangaDex's CDN returns
+// 403 to those preflights -> the fetch is blocked as a CORS error. A plain GET
+// is a "simple request" that MangaDex answers with Access-Control-Allow-Origin: *.
+const mdFetchOptions = {};
 
 function getMdTitle(manga) {
   if (!manga || !manga.attributes || !manga.attributes.title) return 'Unknown';
