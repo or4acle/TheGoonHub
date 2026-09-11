@@ -5,7 +5,7 @@
   <p>Advanced multi-site media browser with a local vault and recommendation engine :))))</p>
 
   <img src="https://img.shields.io/badge/Platform-Web%20App-6f1ab1" alt="Platform"/>
-  <img src="https://img.shields.io/badge/API-Rule34%20%7C%20Gelbooru%20%7C%20Danbooru%20%7C%20e621-blue" alt="APIs"/>
+  <img src="https://img.shields.io/badge/API-Rule34%20%7C%20e621%20%7C%20yande.re%20%7C%20Konachan-blue" alt="APIs"/>
   <img src="https://img.shields.io/badge/Storage-IndexedDB%20Local-brightgreen" alt="Storage"/>
   <img src="https://img.shields.io/badge/Node.js-%3E%3D14-orange" alt="Node.js"/>
 </div>
@@ -13,17 +13,17 @@
 ## Overview
 
 R34 Media Hub Pro is a modern, fully client-side media browser that pulls from
-multiple booru APIs (Rule34, Gelbooru, Safebooru, XBooru, TBIB, Danbooru, e621)
-plus MangaDex. It combines a powerful tag-based search with a **local Vault**
-(IndexedDB) and a **Recommendation Engine** that studies your saved art and
-learning behavior to generate a personalized discovery feed.
+multiple booru APIs (Rule34, e621, yande.re, Konachan) plus MangaDex. It
+combines a powerful tag-based search with a **local Vault** (IndexedDB) and a
+**Recommendation Engine** that studies your saved art and learning behavior to
+generate a personalized discovery feed.
 
 Everything is stored locally in your browser — no accounts, no servers, no data
 leaving your machine beyond the image-board APIs you query.
 
 ## Features
 
-- **Multi-site support:** Rule34, Gelbooru (SFW), Safebooru (SFW), XBooru, TBIB, Danbooru and e621, selected from the header dropdown.
+- **Multi-site support:** Rule34, e621, yande.re and Konachan, selected from the header dropdown.
 - **Booru tag search:** autocomplete, multi-pill tags, exact/exclude (`-tag`), fuzzy (`~tag`) and wildcard (`tag*`) modifiers.
 - **Global whitelist & blacklist:** tags that are always included or always excluded across every search.
 - **Timeframe & sorting capsules:** filter by last 7/30/90/180/365 days and sort by score, time or random.
@@ -32,7 +32,8 @@ leaving your machine beyond the image-board APIs you query.
 - **Lightbox recommendations:** "More like this" suggestions generated from the currently open post.
 - **Manga browser:** full MangaDex search, filters (rating, status, language, year), Read-all / single-page reader and local bookshelf.
 - **Infinite scroll + background preloading** for a seamless Pinterest-style grid.
-- **CORS proxy support:** works out of the box on direct CORS-enabled sites; a user-supplied proxy URL is used for the rest.
+- **CORS proxy support:** works out of the box on direct CORS-enabled sites; a user-supplied proxy URL is used for yande.re/Konachan.
+- **Privacy-first:** zero trackers, no third-party JS/fonts/CDNs, self-hosted localForage, strict CSP, consent banner and policy pages.
 
 ## Installation
 
@@ -60,54 +61,28 @@ This project is a static site and works on any static host.
 3. Your app will be live at `https://<user>.github.io/<repo>/`.
 
 > **Note:** Rule34, e621 and MangaDex allow cross-origin requests, so those sites
-> work through GitHub Pages with no extra setup. To use the browser-side
-> proxy-free sites (Gelbooru, Safebooru, XBooru, TBIB) on a static host, set a
-> CORS proxy (see below).
+> work through GitHub Pages with no extra setup. To use yande.re or Konachan on a
+> static host, set a CORS proxy (see below).
 
 ## CORS Proxy (optional)
 
-Some booru APIs do not send `Access-Control-Allow-Origin` headers. If you want to
-use Gelbooru/Safebooru/XBooru/TBIB from a static deployment (or from a browser
-that blocks direct requests), set a CORS proxy in the app:
+yande.re and Konachan do not send `Access-Control-Allow-Origin` headers, so on a
+static deployment you need a CORS proxy to use them:
 
 1. Open **Global Settings** (the gear icon in the Vault taskbar).
 2. Under *Network & Proxy Settings*, paste a proxy URL and click **Save Proxy**.
 
 The proxy must accept `?url=<encoded target>` and forward the request with CORS
 headers. A free Cloudflare Worker is recommended — the full, hardened version
-lives in [cloudflare-worker.js](cloudflare-worker.js) (handles OPTIONS
-preflight, strips browser `Origin`/`Referer`/`Cookie` so boorus don't reject
-the request, and rejects non-http targets):
+lives in [cloudflare-worker.js](cloudflare-worker.js); it handles OPTIONS
+preflight, strips browser `Origin`/`Referer`/`Cookie` so boorus don't reject the
+request, rejects non-http targets, rate-limits per IP (120 req/min) and adds
+security headers:
 
-```js
-// Cloudflare Worker — copy into https://dash.cloudflare.com -> Workers -> Create
-export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-    const method = request.method.toUpperCase();
-    if (method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': '*',
-        'Access-Control-Max-Age': '86400',
-      }});
-    }
-    if (method !== 'GET' && method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
-    const target = url.searchParams.get('url');
-    if (!target) return new Response('Missing ?url= parameter', { status: 400 });
-    const res = await fetch(target, { method: 'GET' });
-    const headers = new Headers(res.headers);
-    headers.set('Access-Control-Allow-Origin', '*');
-    headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    headers.set('Access-Control-Allow-Headers', '*');
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
-  },
-};
-```
-
-Deploy it, copy your worker URL (e.g. `https://your-name.workers.dev`), then use
-`https://your-name.workers.dev/?` as the proxy URL in the app.
+1. Go to `https://dash.cloudflare.com` -> **Workers & Pages** -> **Create**.
+2. Paste the contents of `cloudflare-worker.js` and deploy.
+3. Copy your worker URL (e.g. `https://your-name.workers.dev`), then use
+   `https://your-name.workers.dev/?` as the proxy URL in the app.
 
 ## How to Use
 
@@ -122,7 +97,7 @@ Deploy it, copy your worker URL (e.g. `https://your-name.workers.dev`), then use
 
 | Setting | Location | Description |
 |---|---|---|
-| Site | Search bar dropdown | Active API source (Rule34, Gelbooru, Safebooru, XBooru, TBIB, Danbooru, e621) |
+| Site | Search bar dropdown | Active API source (Rule34, e621, yande.re, Konachan) |
 | Proxy URL | Global Settings -> Network | CORS proxy for sites without CORS (`https://proxy.workers.dev/?`) |
 | Grid Density | Global Settings -> UI & Layout | Compact / Normal / Large thumbnail sizing |
 | Global Whitelist | Global Settings -> Content Filtering | Tags always appended to every search |
@@ -144,8 +119,25 @@ The recommendation engine turns your saved art into a personalized feed:
 4. **Blending** — targeted tag queries are blended with random discovery batches.
 5. **Learn** — the tags you search for and the posts you view are also tracked, so your feed keeps adapting to what you actually engage with.
 
+## Privacy & Compliance
+
+This project is a client-side app with no backend. It follows a privacy-first
+approach out of the box:
+
+- **No tracking** — no analytics, cookies, fingerprinting or third-party scripts.
+- **Self-hosted dependencies** — localForage is vendored in `js/vendor/`; no CDNs
+  or Google Fonts requests are made.
+- **Strict CSP** — enforced via `<meta http-equiv="Content-Security-Policy">`,
+  with `script-src 'self'` (no inline scripts or third-party JS).
+- **Rate limiting** — all API calls are throttled with automatic 429 backoff;
+  the CORS worker also rate-limits per IP.
+- **Consent banner** — users are asked before browser storage is used, and the
+  Site Settings section states what is stored locally.
+- **Policy pages** — [Privacy Policy](privacy-policy.html),
+  [Terms & Conditions](terms.html) and [Cookie Policy](cookies-policy.html).
+
 ## Credits
 
-- The booru communities and APIs: Rule34, Gelbooru, Safebooru, XBooru, TBIB, Danbooru, e621.
+- The booru communities and APIs: Rule34, e621, yande.re, Konachan.
 - MangaDex for the manga search and reading API.
-- Icons from [Icons8](https://icons8.com).
+- [Icons8](https://icons8.com) for the icon set.

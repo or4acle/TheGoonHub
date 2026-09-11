@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /js/vendor/
+
+# The app is fully client-side; there is no /admin or protected area to block.

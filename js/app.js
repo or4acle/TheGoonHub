@@ -1062,7 +1062,7 @@ function injectPostCardsIntoGrid(data, targetContainer = grid) {
            <li onclick="navigator.clipboard.writeText('${post.file_url}'); if(typeof triggerToastNotification === 'function') triggerToastNotification('Image URL copied to clipboard!'); event.stopPropagation();">
              <img src="Icons/icons8-link-48.png" class="dropdown-icon" /> Share Link
            </li>
-           <li class="text-danger" onclick="document.getElementById('report-modal').style.display='flex'; event.stopPropagation();">
+           <li class="text-danger report-option">
              <img src="Icons/icons8-error-30.png" class="dropdown-icon danger-icon" /> Report Image
            </li>
          </ul>
@@ -1071,6 +1071,16 @@ function injectPostCardsIntoGrid(data, targetContainer = grid) {
 
     const optionsBtn = footer.querySelector('.pinterest-card-options');
     const dropdown = footer.querySelector('.card-options-dropdown');
+    
+    // Open the fake "Report Image" modal without letting the card open the lightbox.
+    const reportOption = footer.querySelector('.report-option');
+    if (reportOption) {
+      reportOption.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const modal = document.getElementById('report-modal');
+        if (modal) modal.style.display = 'flex';
+      });
+    }
     
     optionsBtn.addEventListener('click', (e) => {
       e.stopPropagation();

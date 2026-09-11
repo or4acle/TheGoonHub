@@ -9,8 +9,8 @@
     {
       id: 'rule34',
       name: 'Rule34',
-      api: 'https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624',
-      tagApi: 'https://api.rule34.xxx/index.php?page=dapi&s=tag&q=index&api_key=2116381cf8a58c1de26faacfac84d760099e863311a98c1d060028461c82ab831d579f74e72983e6af34adbb661039c6a610d8f422be912fee3cb90b39d38f1a&user_id=6064624&name=',
+      api: 'https://api.rule34.xxx/index.php?page=dapi&s=post&q=index',
+      tagApi: 'https://api.rule34.xxx/index.php?page=dapi&s=tag&q=index&name=',
       autocomplete: 'https://api.rule34.xxx/autocomplete.php?q={q}',
       tagsApi: true,
       format: 'gelbooru',

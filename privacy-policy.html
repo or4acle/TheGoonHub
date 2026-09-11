@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="index, follow">
+  <title>Privacy Policy — R34 Media Hub Pro</title>
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; base-uri 'self'; form-action 'self'; connect-src 'none'; font-src 'self'; img-src 'self' data:; media-src 'none'; object-src 'none'; script-src 'none'; style-src 'unsafe-inline'">
+  <style>
+    :root {
+      --bg: #0d0d11;
+      --surface: #16161f;
+      --border: #242433;
+      --accent: #e95e8c;
+      --text: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+      line-height: 1.7;
+    }
+    .wrap { max-width: 800px; margin: 0 auto; padding: 40px 24px; }
+    h1 { color: var(--accent); font-size: 1.8rem; }
+    h2 { color: var(--accent); font-size: 1.2rem; margin-top: 32px; }
+    a { color: var(--accent); }
+    code { background: var(--surface); border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; font-size: 0.9em; }
+    .meta { color: #9d9db3; font-size: 0.9rem; }
+    ul { padding-left: 20px; }
+    .nav { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; font-size: 0.9rem; }
+    .nav a { text-decoration: none; border: 1px solid var(--border); padding: 6px 12px; border-radius: 8px; background: var(--surface); }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="nav">
+      <a href="index.html">&larr; Back to app</a>
+      <a href="terms.html">Terms &amp; Conditions</a>
+      <a href="cookies-policy.html">Cookie Policy</a>
+    </div>
+
+    <h1>Privacy Policy</h1>
+    <p class="meta">Last updated: September 2026</p>
+
+    <p><strong>R34 Media Hub Pro</strong> is a client-side web application. There is no
+      backend, no account system, and no database on our side. Everything you do in the
+      app happens in your own browser, on your own device.</p>
+
+    <h2>1. What we collect</h2>
+    <p>We do not operate servers that receive, store or process your personal data.
+      There is no analytics, no advertising, no tracking pixels and no fingerprinting
+      in this application. No data is ever sent to us.</p>
+
+    <h2>2. Data stored on your device</h2>
+    <p>To function, the app stores information <em>locally</em> in your browser using
+      <code>localStorage</code> and <code>IndexedDB</code> (via the self-hosted localForage
+      library). This may include:</p>
+    <ul>
+      <li>Your selected media site and display preferences;</li>
+      <li>Your vault, likes, folders and browsing history;</li>
+      <li>Tag whitelists/blacklists and recommendation-engine data;</li>
+      <li>Your consent choice (see Cookie Policy).</li>
+    </ul>
+    <p>This data never leaves your device except when <em>you</em> choose to export a
+      backup file using the built-in Export button. You can clear all of it at any time
+      from your browser's settings (clear site data).</p>
+
+    <h2>3. Data sent to media providers</h2>
+    <p>When you search or load images/manga, your browser sends a request directly to
+      the public API of the provider you selected (e.g. Rule34, e621, yande.re,
+      Konachan, MangaDex). Those providers receive your IP address and the tag/text
+      you searched, which is required to return results. They have their own privacy
+      policies and we have no control over how they use that data.</p>
+    <p>For sites that do not allow cross-origin requests (yande.re and Konachan), you
+      may configure a CORS proxy of your choice. In that case the proxy receives the
+      same information (your IP and your query) in order to relay the request.</p>
+
+    <h2>4. Third-party content and embeds</h2>
+    <p>The app embeds media files (images, audio, video) hosted by the third-party
+      providers listed above. Loading those files may expose your IP address to the
+      hosting provider. The app loads <strong>no third-party JavaScript, fonts,
+      analytics or tracking embeds</strong>.</p>
+
+    <h2>5. Rate limiting and abuse protection</h2>
+    <p>To respect provider limits, the app throttles outgoing requests and applies
+      automatic backoff on errors. This exists to protect provider APIs and your
+      connection, not to collect data.</p>
+
+    <h2>6. Your choices</h2>
+    <ul>
+      <li><strong>Decline consent:</strong> the app still works read-only; you will be
+        asked before storage is used.</li>
+      <li><strong>Clear data:</strong> use your browser's "Clear site data" or the
+        Vault Export/Import controls.</li>
+      <li><strong>Contact:</strong> this is an open-source, non-commercial hobby
+        project. Report issues at
+        <code>https://github.com/or4acle/TheGoonHub</code>.</li>
+    </ul>
+
+    <p>This policy may change as the app evolves. The date above reflects the latest
+      version.</p>
+  </div>
+</body>
+
+</html>
