@@ -68,7 +68,7 @@
 
         <!-- Accessibility & Modern Best Practice: Wrap search inputs in <form> with role="search" -->
         <div class="sticky-header-container">
-          <form class="search-wrap" role="search" onsubmit="event.preventDefault();">
+          <form class="search-wrap" role="search">
             <div class="search-row">
               <div class="search-input-container" id="search-container">
                 <!-- Accessibility: aria-live="polite" announces dynamic changes to tags -->
@@ -772,7 +772,7 @@
         <button id="save-modal-close" class="btn-close" aria-label="Close Save Modal">✕</button>
       </div>
 
-      <form class="search-input-container modal-header-spaced" onsubmit="event.preventDefault();" role="search">
+      <form class="search-input-container modal-header-spaced" role="search">
         <input id="save-modal-search" type="search" placeholder="Search folders..." class="input-transparent"
           autocomplete="off" aria-label="Search folders">
       </form>
@@ -781,7 +781,7 @@
         <!-- Folder items injected here -->
       </div>
 
-      <form style="display: flex; gap: 8px;" onsubmit="event.preventDefault();">
+      <form style="display: flex; gap: 8px;">
         <input id="save-modal-new-input" type="text" placeholder="Create folder..." class="input-surface-flex"
           aria-label="New folder name" required>
         <button id="save-modal-new-btn" type="submit" class="btn-purple-sm">Create</button>

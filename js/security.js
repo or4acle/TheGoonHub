@@ -80,12 +80,34 @@
     profileBtn.addEventListener('click', function () { vaultNav.click(); });
   }
 
+  // All <form> elements in this app are pill-entry containers; none of them
+  // should ever trigger a native page navigation (previously each form carried
+  // an inline onsubmit="event.preventDefault()", which CSP now disallows).
+  function initFormSubmitGuard() {
+    document.addEventListener('submit', function (e) {
+      if (e.target && e.target.tagName === 'FORM') e.preventDefault();
+    }, true);
+  }
+
+  // "Go Discover" empty-state buttons are injected via template strings by
+  // app.js. Delegate at document level so no inline handler is needed.
+  function initGoDiscoverButton() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('.go-discover-btn') : null;
+      if (!btn) return;
+      var nav = document.getElementById('nav-images');
+      if (nav) nav.click();
+    });
+  }
+
   function initFooterYear() {
     var el = document.getElementById('footer-year');
     if (el) el.textContent = String(new Date().getFullYear());
   }
 
   // --- 4. Boot --------------------------------------------------------------
+  initFormSubmitGuard();
+  initGoDiscoverButton();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {
       initConsentBanner();

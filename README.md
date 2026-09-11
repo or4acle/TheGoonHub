@@ -136,6 +136,13 @@ approach out of the box:
 - **Policy pages** — [Privacy Policy](privacy-policy.html),
   [Terms & Conditions](terms.html) and [Cookie Policy](cookies-policy.html).
 
+> **Note on the Rule34 tag endpoint:** post searches are anonymous, but Rule34's
+> `s=tag` category endpoint requires authentication, so the app ships an API key
+> for that endpoint only. In a client-side deployment this key is necessarily
+> visible in the JS; never use a key you are not willing to expose. A more
+> private setup is to drop the key from `js/sites.js` and inject it server-side
+> from your CORS Worker (env secret) instead.
+
 ## Credits
 
 - The booru communities and APIs: Rule34, e621, yande.re, Konachan.

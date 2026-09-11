@@ -12,6 +12,22 @@ function shouldProxyRequest() {
 window.proxifyUrl = function proxifyUrl(originalUrl) {
   return shouldProxyRequest() ? PROXY + encodeURIComponent(originalUrl) : originalUrl;
 };
+
+// MangaDex fetch with CORS fallback: MangaDex is behind Cloudflare and, from
+// some networks/IPs, serves a challenge page WITHOUT Access-Control-Allow-
+// Origin (status 200). Browsers then throw at read time. If that happens and a
+// user proxy is configured, retry the exact same request through it.
+window.mdFetch = async function mdFetch(url, options) {
+  const attempt = (target) => throttledFetch(target, options || {});
+  try {
+    return await attempt(url);
+  } catch (err) {
+    if (PROXY && url.indexOf(PROXY) !== 0) {
+      return await attempt(PROXY + encodeURIComponent(url));
+    }
+    throw err;
+  }
+};
 // API / autocompletion / page size are now driven by the active site (js/sites.js).
 let API = '';
 let AUTOCOMPLETE_API = '';

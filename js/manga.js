@@ -96,7 +96,7 @@ async function resolveAuthorOrArtistId(name) {
   if (uuidRegex.test(trimmed)) return trimmed;
   if (mdAuthorCache.has(trimmed.toLowerCase())) return mdAuthorCache.get(trimmed.toLowerCase());
   try {
-    const res = await throttledFetch(proxifyUrl(`${MD_API_BASE}/author?name=${encodeURIComponent(trimmed)}&limit=1`), mdFetchOptions);
+    const res = await mdFetch(`${MD_API_BASE}/author?name=${encodeURIComponent(trimmed)}&limit=1`, mdFetchOptions);
     const data = await res.json();
     if (data && data.data && data.data.length > 0) {
       const id = data.data[0].id;
@@ -111,7 +111,7 @@ async function resolveAuthorOrArtistId(name) {
 
 async function initMdTags() {
   try {
-    const res = await throttledFetch(proxifyUrl(`${MD_API_BASE}/manga/tag`), mdFetchOptions);
+    const res = await mdFetch(`${MD_API_BASE}/manga/tag`, mdFetchOptions);
     const data = await res.json();
     if (data && data.data) {
       mdFullTags = data.data.map(tag => {
@@ -297,7 +297,7 @@ async function searchMangaGrid(titleQuery, page, append = false) {
   }
 
   try {
-    const res = await throttledFetch(proxifyUrl(url), mdFetchOptions);
+    const res = await mdFetch(url, mdFetchOptions);
     const data = await res.json();
 
     if (!data || !data.data || data.data.length === 0) {
@@ -468,7 +468,7 @@ async function injectPhysicalBookshelf(data, targetContainer) {
 
       if (manga.attributes.volumeCount === undefined) {
         try {
-          const aggRes = await throttledFetch(proxifyUrl(`${MD_API_BASE}/manga/${post.id}/aggregate`));
+          const aggRes = await mdFetch(`${MD_API_BASE}/manga/${post.id}/aggregate`);
           if (aggRes.ok) {
             const aggData = await aggRes.json();
             const vols = aggData.volumes ? Object.keys(aggData.volumes).length : 1;
@@ -641,11 +641,11 @@ async function readMangaVolumeDirectly(post, targetVolumeNumber) {
 
   try {
       const lang = localStorage.getItem('r34_manga_lang') || 'en';
-      let aggRes = await throttledFetch(proxifyUrl(`${MD_API_BASE}/manga/${post.id}/aggregate?translatedLanguage[]=${lang}`));
+      let aggRes = await mdFetch(`${MD_API_BASE}/manga/${post.id}/aggregate?translatedLanguage[]=${lang}`);
       let aggData = await aggRes.json();
       
       if (!aggData.volumes || Object.keys(aggData.volumes).length === 0) {
-          aggRes = await throttledFetch(proxifyUrl(`${MD_API_BASE}/manga/${post.id}/aggregate`));
+          aggRes = await mdFetch(`${MD_API_BASE}/manga/${post.id}/aggregate`);
           aggData = await aggRes.json();
       }
 
@@ -836,16 +836,16 @@ async function openInlineMangaExpansion(post, clickedElement, container, targetV
     chapList.innerHTML = '<span class="text-muted">Loading volumes...</span>';
     try {
       // Fetch aggregate for chapters and volumes
-      let aggRes = await throttledFetch(proxifyUrl(`https://api.mangadex.org/manga/${post.id}/aggregate?translatedLanguage[]=${lang}`));
+      let aggRes = await mdFetch(`https://api.mangadex.org/manga/${post.id}/aggregate?translatedLanguage[]=${lang}`);
       let aggData = await aggRes.json();
       
       if (!aggData.volumes || Object.keys(aggData.volumes).length === 0) {
-        aggRes = await throttledFetch(proxifyUrl(`https://api.mangadex.org/manga/${post.id}/aggregate`));
+        aggRes = await mdFetch(`https://api.mangadex.org/manga/${post.id}/aggregate`);
         aggData = await aggRes.json();
       }
 
       // Fetch cover arts for all volumes
-      const coverRes = await throttledFetch(proxifyUrl(`https://api.mangadex.org/cover?manga[]=${post.id}&limit=100`));
+      const coverRes = await mdFetch(`https://api.mangadex.org/cover?manga[]=${post.id}&limit=100`);
       const coverData = await coverRes.json();
       
       const coverMap = {};
@@ -1398,7 +1398,7 @@ if (mangaAdvancedSearchInput) {
 
     mangaAutocompleteTimer = setTimeout(async () => {
       try {
-        const res = await throttledFetch(proxifyUrl(`${MD_API_BASE}/manga?title=${encodeURIComponent(val)}&limit=6&includes[]=cover_art`), mdFetchOptions);
+        const res = await mdFetch(`${MD_API_BASE}/manga?title=${encodeURIComponent(val)}&limit=6&includes[]=cover_art`, mdFetchOptions);
         const data = await res.json();
         if (data && data.data && data.data.length > 0) {
           mangaAutocompleteBox.innerHTML = '';
@@ -1525,7 +1525,7 @@ if (mangaLuckyBtn) {
       let randomUrl = `${MD_API_BASE}/manga/random?includes[]=cover_art`;
       ratings.forEach(r => randomUrl += `&contentRating[]=${r}`);
 
-      const res = await fetch(proxifyUrl(randomUrl), mdFetchOptions);
+      const res = await mdFetch(randomUrl, mdFetchOptions);
       const data = await res.json();
       if (data && data.data && data.data.id) {
         if (mangaAdvancedSearchInput) {
@@ -1609,12 +1609,12 @@ async function fetchAndRenderChapters(mangaId) {
   const feedUrl = `${MD_API_BASE}/manga/${mangaId}/feed?translatedLanguage[]=${lang}&order[volume]=desc&order[chapter]=desc&limit=500`;
 
   try {
-    let feedRes = await throttledFetch(proxifyUrl(feedUrl), mdFetchOptions);
+    let feedRes = await mdFetch(feedUrl, mdFetchOptions);
     let feedData = await feedRes.json();
     
     if (!feedData.data || feedData.data.length === 0) {
       const fallbackUrl = `${MD_API_BASE}/manga/${mangaId}/feed?order[volume]=desc&order[chapter]=desc&limit=500`;
-      feedRes = await throttledFetch(proxifyUrl(fallbackUrl), mdFetchOptions);
+      feedRes = await mdFetch(fallbackUrl, mdFetchOptions);
       feedData = await feedRes.json();
     }
     
@@ -1677,7 +1677,7 @@ if (mangaFetchBtn) {
       data = mangaCache.get(mangaId);
     } else {
       const resUrl = `${MD_API_BASE}/manga/${mangaId}?includes[]=cover_art`;
-      const res = await throttledFetch(proxifyUrl(resUrl), mdFetchOptions);
+      const res = await mdFetch(resUrl, mdFetchOptions);
       const resData = await res.json();
       data = resData.data;
       if (data && data.id) mangaCache.set(mangaId, data);

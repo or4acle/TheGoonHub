@@ -1056,12 +1056,12 @@ function injectPostCardsIntoGrid(data, targetContainer = grid) {
       </button>
       <div class="card-options-dropdown">
          <ul>
-           <li onclick="window.open('${post.file_url}', '_blank'); event.stopPropagation();">
-             <img src="Icons/icons8-download-48.png" class="dropdown-icon" /> Download Image
-           </li>
-           <li onclick="navigator.clipboard.writeText('${post.file_url}'); if(typeof triggerToastNotification === 'function') triggerToastNotification('Image URL copied to clipboard!'); event.stopPropagation();">
-             <img src="Icons/icons8-link-48.png" class="dropdown-icon" /> Share Link
-           </li>
+<li class="download-option">
+              <img src="Icons/icons8-download-48.png" class="dropdown-icon" /> Download Image
+            </li>
+            <li class="share-option">
+              <img src="Icons/icons8-link-48.png" class="dropdown-icon" /> Share Link
+            </li>
            <li class="text-danger report-option">
              <img src="Icons/icons8-error-30.png" class="dropdown-icon danger-icon" /> Report Image
            </li>
@@ -1079,6 +1079,26 @@ function injectPostCardsIntoGrid(data, targetContainer = grid) {
         e.stopPropagation();
         const modal = document.getElementById('report-modal');
         if (modal) modal.style.display = 'flex';
+      });
+    }
+
+    // Download & Share (previously inline onclick -> moved here to satisfy CSP).
+    const downloadOption = footer.querySelector('.download-option');
+    if (downloadOption) {
+      downloadOption.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (post.file_url) window.open(post.file_url, '_blank');
+      });
+    }
+    const shareOption = footer.querySelector('.share-option');
+    if (shareOption) {
+      shareOption.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!post.file_url) return;
+        navigator.clipboard.writeText(post.file_url).catch(() => {});
+        if (typeof triggerToastNotification === 'function') {
+          triggerToastNotification('Image URL copied to clipboard!');
+        }
       });
     }
     
@@ -1285,7 +1305,7 @@ function renderVaultGridToDedicatedView() {
       <div style="font-size: 3rem; opacity: 0.8;">${icon}</div>
       <h3 style="margin: 0; font-size: 1.5rem; color: #fff;">${title}</h3>
       <p style="margin: 0; color: var(--text-muted); font-size: 1rem; text-align: center;">${message}</p>
-      <button onclick="document.getElementById('nav-feed').click()" style="margin-top: 16px; background: var(--accent-purple); color: #fff; border: none; padding: 12px 32px; border-radius: 50px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 4px 15px rgba(233, 94, 140, 0.4);">Go Discover</button>
+      <button class="go-discover-btn" style="margin-top: 16px; background: var(--accent-purple); color: #fff; border: none; padding: 12px 32px; border-radius: 50px; font-weight: bold; font-size: 1.1rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 4px 15px rgba(233, 94, 140, 0.4);">Go Discover</button>
     </div>
   `;
 
